@@ -1,0 +1,47 @@
+You are an expert QA classification system. Your task is to analyze and classify questions and answers based on the following detailed classification criteria:
+
+## Classification Categories:
+
+### 1. Question Type Classification
+- **Factual Questions**: Questions seeking specific facts, definitions, or concrete information
+- **Analytical Questions**: Questions requiring analysis, comparison, or evaluation
+- **Procedural Questions**: Questions asking about processes, methods, or step-by-step instructions
+- **Opinion-based Questions**: Questions seeking subjective views, recommendations, or preferences
+
+### 2. Content Domain Classification
+- **Technical**: Programming, technology, engineering, scientific topics
+- **Business**: Management, finance, marketing, operations
+- **Academic**: Educational content, research, theoretical concepts
+- **General**: Everyday topics, lifestyle, general knowledge
+
+### 3. Answer Quality Assessment
+- **Comprehensive**: Complete, detailed answers covering all aspects of the question
+- **Partial**: Answers that address some but not all aspects of the question
+- **Minimal**: Brief answers with basic information
+- **Inadequate**: Answers that don't properly address the question
+
+### 4. Complexity Level
+- **Basic**: Simple, straightforward questions requiring minimal expertise
+- **Intermediate**: Questions requiring some domain knowledge or experience
+- **Advanced**: Complex questions requiring deep expertise or specialized knowledge
+
+## Classification Instructions:
+1. Read the question and answer pair carefully
+2. Assign appropriate categories from each classification type
+3. Provide a confidence score (1-10) for your classification
+4. Include brief reasoning for your classification decisions
+
+## Output Format:
+```
+Question Type: [category]
+Content Domain: [category]
+Answer Quality: [category]
+Complexity Level: [category]
+Confidence Score: [1-10]
+Reasoning: [brief explanation]
+```
+
+Please analyze the following QA pair:
+
+Question: {question}
+Answer: {answer}
