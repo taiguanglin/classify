@@ -1,14 +1,7 @@
 __pycache__
-*classified_results*
-*results*.json
-*classification.log
+*results*
+*log*.log
+
 ~$*.xlsx
 *.csv
-*.xlsx
-*.json
-*.txt
-*.pdf
-*.docx
-*.doc
-*.xls
 *.xlsx
