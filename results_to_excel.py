@@ -87,7 +87,7 @@ class CurationResultsWriter:
         except Exception as e:
             logger.error(f"創建輸出Excel失敗: {e}")
             raise
-
+    
     def _create_compact_excel(self, source_workbook, source_worksheet, required_rows: set):
         """創建精簡Excel工作簿，只包含需要的行"""
         from openpyxl import Workbook
@@ -181,90 +181,86 @@ class CurationResultsWriter:
             # 不拋出異常，讓程序繼續執行
     
     def _add_column_headers(self, worksheet):
-        """在標題行添加新列的標題"""
+        """添加列標題"""
         try:
-            # 獲取輸出列配置
-            breadth_score_col = self.config.getint('output', 'breadth_score_column', fallback=24)
-            depth_score_col = self.config.getint('output', 'depth_score_column', fallback=25)
-            overall_score_col = self.config.getint('output', 'overall_score_column', fallback=26)
-            breadth_comment_col = self.config.getint('output', 'breadth_comment_column', fallback=27)
-            depth_comment_col = self.config.getint('output', 'depth_comment_column', fallback=28)
-            overall_comment_col = self.config.getint('output', 'overall_comment_column', fallback=29)
+            # 獲取配置
+            breadth_score_col = self.config.getint('output', 'breadth_score_column')
+            depth_score_col = self.config.getint('output', 'depth_score_column')
+            uniqueness_score_col = self.config.getint('output', 'uniqueness_score_column')
+            overall_score_col = self.config.getint('output', 'overall_score_column')
+            breadth_comment_col = self.config.getint('output', 'breadth_comment_column')
+            depth_comment_col = self.config.getint('output', 'depth_comment_column')
+            uniqueness_comment_col = self.config.getint('output', 'uniqueness_comment_column')
+            overall_comment_col = self.config.getint('output', 'overall_comment_column')
             
-            # 使用正確的標題行號
-            title_row = getattr(self, 'title_row_new', 6)
-            worksheet.cell(row=title_row, column=breadth_score_col).value = "廣度評分"
-            worksheet.cell(row=title_row, column=depth_score_col).value = "深度評分"
-            worksheet.cell(row=title_row, column=overall_score_col).value = "綜合評分"
-            worksheet.cell(row=title_row, column=breadth_comment_col).value = "廣度評論"
-            worksheet.cell(row=title_row, column=depth_comment_col).value = "深度評論"
-            worksheet.cell(row=title_row, column=overall_comment_col).value = "總體評價"
+            # 添加標題行
+            worksheet.cell(row=1, column=breadth_score_col, value="廣度評分")
+            worksheet.cell(row=1, column=depth_score_col, value="深度評分")
+            worksheet.cell(row=1, column=uniqueness_score_col, value="獨特性評分")
+            worksheet.cell(row=1, column=overall_score_col, value="綜合評分")
+            worksheet.cell(row=1, column=breadth_comment_col, value="廣度評論")
+            worksheet.cell(row=1, column=depth_comment_col, value="深度評論")
+            worksheet.cell(row=1, column=uniqueness_comment_col, value="獨特性評論")
+            worksheet.cell(row=1, column=overall_comment_col, value="總體評價")
             
-            # 設置標題格式
-            title_row = getattr(self, 'title_row_new', 6)
-            for col in [breadth_score_col, depth_score_col, overall_score_col, breadth_comment_col, depth_comment_col, overall_comment_col]:
-                cell = worksheet.cell(row=title_row, column=col)
-                cell.font = openpyxl.styles.Font(bold=True)
-                cell.alignment = openpyxl.styles.Alignment(
-                    horizontal='center',
-                    vertical='center'
-                )
-                cell.border = openpyxl.styles.Border(
-                    left=openpyxl.styles.Side(style='thin'),
-                    right=openpyxl.styles.Side(style='thin'),
-                    top=openpyxl.styles.Side(style='thin'),
-                    bottom=openpyxl.styles.Side(style='thin')
-                )
-            
-            logger.info(f"已添加列標題: 第{breadth_score_col}列(廣度評分), 第{depth_score_col}列(深度評分), 第{overall_score_col}列(綜合評分), 第{breadth_comment_col}列(廣度評論), 第{depth_comment_col}列(深度評論), 第{overall_comment_col}列(總體評價)")
+            logger.info("列標題添加完成")
             
         except Exception as e:
             logger.error(f"添加列標題失敗: {e}")
-            # 不拋出異常，讓程序繼續執行
     
     def write_curation_result(self, worksheet, row: int, result: Dict[str, Any]):
-        """寫入精選評分結果到指定行"""
+        """寫入精選評分結果到Excel"""
         try:
-            # 使用行號映射獲取新的行號
-            if hasattr(self, 'row_mapping') and row in self.row_mapping:
-                actual_row = self.row_mapping[row]
-            else:
-                actual_row = row
+            # 獲取輸出列配置
+            breadth_score_col = self.config.getint('output', 'breadth_score_column')
+            depth_score_col = self.config.getint('output', 'depth_score_column')
+            uniqueness_score_col = self.config.getint('output', 'uniqueness_score_column')
+            overall_score_col = self.config.getint('output', 'overall_score_column')
+            breadth_comment_col = self.config.getint('output', 'breadth_comment_column')
+            depth_comment_col = self.config.getint('output', 'depth_comment_column')
+            uniqueness_comment_col = self.config.getint('output', 'uniqueness_comment_column')
+            overall_comment_col = self.config.getint('output', 'overall_comment_column')
             
-            # 獲取列配置
-            breadth_score_col = self.config.getint('output', 'breadth_score_column', fallback=24)
-            depth_score_col = self.config.getint('output', 'depth_score_column', fallback=25)
-            overall_score_col = self.config.getint('output', 'overall_score_column', fallback=26)
-            breadth_comment_col = self.config.getint('output', 'breadth_comment_column', fallback=27)
-            depth_comment_col = self.config.getint('output', 'depth_comment_column', fallback=28)
-            overall_comment_col = self.config.getint('output', 'overall_comment_column', fallback=29)
+            # 寫入評分結果
+            if result.get('breadth_score') != '解析失敗':
+                worksheet.cell(row=row, column=breadth_score_col, value=result['breadth_score'])
             
-            # 寫入精選評分結果到輸出列
-            self._write_cell_with_format(worksheet, actual_row, breadth_score_col, result.get('breadth_score', ''))
-            self._write_cell_with_format(worksheet, actual_row, depth_score_col, result.get('depth_score', ''))
-            self._write_cell_with_format(worksheet, actual_row, overall_score_col, result.get('overall_score', ''))
-            self._write_cell_with_format(worksheet, actual_row, breadth_comment_col, result.get('breadth_comment', ''))
-            self._write_cell_with_format(worksheet, actual_row, depth_comment_col, result.get('depth_comment', ''))
-            self._write_cell_with_format(worksheet, actual_row, overall_comment_col, result.get('overall_comment', ''))
+            if result.get('depth_score') != '解析失敗':
+                worksheet.cell(row=row, column=depth_score_col, value=result['depth_score'])
             
-            # 設置問題和答案的comment（包含摘要）
-            question_summary = result.get('question_summary', '')
-            answer_summary = result.get('answer_summary', '')
+            if result.get('uniqueness_score') != '解析失敗':
+                worksheet.cell(row=row, column=uniqueness_score_col, value=result['uniqueness_score'])
             
-            # 獲取問題和答案列位置
+            if result.get('overall_score') != '解析失敗':
+                worksheet.cell(row=row, column=overall_score_col, value=result['overall_score'])
+            
+            # 寫入評論結果
+            if result.get('breadth_comment') != '解析失敗':
+                worksheet.cell(row=row, column=breadth_comment_col, value=result['breadth_comment'])
+            
+            if result.get('depth_comment') != '解析失敗':
+                worksheet.cell(row=row, column=depth_comment_col, value=result['depth_comment'])
+            
+            if result.get('uniqueness_comment') != '解析失敗':
+                worksheet.cell(row=row, column=uniqueness_comment_col, value=result['uniqueness_comment'])
+            
+            if result.get('overall_comment') != '解析失敗':
+                worksheet.cell(row=row, column=overall_comment_col, value=result['overall_comment'])
+            
+            # 添加摘要評論到問題和答案單元格
             question_col = self.config.getint('excel', 'question_column')
             answer_col = self.config.getint('excel', 'answer_column')
             
-            # 只在有摘要時才添加註釋
-            if question_summary and question_summary.strip():
-                self._set_cell_comment(worksheet, actual_row, question_col, question_summary, '問題摘要')
+            if result.get('question_summary') != '解析失敗':
+                self._set_cell_comment(worksheet, row, question_col, f"大模型摘要: {result['question_summary']}")
             
-            if answer_summary and answer_summary.strip():
-                self._set_cell_comment(worksheet, actual_row, answer_col, answer_summary, '回答摘要')
+            if result.get('answer_summary') != '解析失敗':
+                self._set_cell_comment(worksheet, row, answer_col, f"大模型摘要: {result['answer_summary']}")
+            
+            logger.info(f"第{row}行精選評分結果寫入完成")
             
         except Exception as e:
-            logger.error(f"寫入第 {row} 行結果失敗: {e}")
-            raise
+            logger.error(f"寫入第{row}行精選評分結果失敗: {e}")
     
     def _write_cell_with_format(self, worksheet, row: int, col: int, value: str):
         """寫入單元格並設置自動換行格式"""
@@ -432,9 +428,9 @@ class CurationResultsWriter:
         # 根據輸出模式進行不同的後處理
         if output_mode == 'compact':
             # 精簡模式：自動調整列寬和行高
-            print("📏 正在調整列寬...")
-            self._auto_adjust_columns_and_rows(worksheet)
-            print("👁️ 輸出文件已經只包含需要的行，無需隱藏行...")
+        print("📏 正在調整列寬...")
+        self._auto_adjust_columns_and_rows(worksheet)
+        print("👁️ 輸出文件已經只包含需要的行，無需隱藏行...")
             logger.info("精簡模式：輸出文件已經只包含需要的行，無需隱藏行")
         else:
             # 完整模式：保持原有結構，只調整評分相關列
@@ -468,53 +464,30 @@ class CurationResultsWriter:
             raise
     
     def _auto_adjust_columns_and_rows(self, worksheet):
-        """自動調整列寬和行高以適應內容"""
+        """自動調整列寬和行高"""
         try:
             # 獲取輸出列配置
-            breadth_score_col = self.config.getint('output', 'breadth_score_column', fallback=24)
-            depth_score_col = self.config.getint('output', 'depth_score_column', fallback=25)
-            overall_score_col = self.config.getint('output', 'overall_score_column', fallback=26)
-            breadth_comment_col = self.config.getint('output', 'breadth_comment_column', fallback=27)
-            depth_comment_col = self.config.getint('output', 'depth_comment_column', fallback=28)
-            overall_comment_col = self.config.getint('output', 'overall_comment_column', fallback=29)
+            breadth_score_col = self.config.getint('output', 'breadth_score_column')
+            depth_score_col = self.config.getint('output', 'depth_score_column')
+            uniqueness_score_col = self.config.getint('output', 'uniqueness_score_column')
+            overall_score_col = self.config.getint('output', 'overall_score_column')
+            breadth_comment_col = self.config.getint('output', 'breadth_comment_column')
+            depth_comment_col = self.config.getint('output', 'depth_comment_column')
+            uniqueness_comment_col = self.config.getint('output', 'uniqueness_comment_column')
+            overall_comment_col = self.config.getint('output', 'overall_comment_column')
             
-            # 定義所有需要調整的列及其寬度範圍
-            columns_to_adjust = [
-                # 列G（答疑日期）- 需要足夠寬度顯示日期
-                {'col': 7, 'min_width': 20, 'max_width': 25, 'name': '答疑日期'},
-                # 問題列
-                {'col': self.config.getint('excel', 'question_column'), 'min_width': 30, 'max_width': 60, 'name': '问题'},
-                # 答案列
-                {'col': self.config.getint('excel', 'answer_column'), 'min_width': 30, 'max_width': 60, 'name': '答案'},
-                # 廣度評分列
-                {'col': breadth_score_col, 'min_width': 10, 'max_width': 15, 'name': '廣度評分'},
-                # 深度評分列
-                {'col': depth_score_col, 'min_width': 10, 'max_width': 15, 'name': '深度評分'},
-                # 綜合評分列
-                {'col': overall_score_col, 'min_width': 10, 'max_width': 15, 'name': '綜合評分'},
-                # 廣度評論列
-                {'col': breadth_comment_col, 'min_width': 20, 'max_width': 50, 'name': '廣度評論'},
-                # 深度評論列
-                {'col': depth_comment_col, 'min_width': 20, 'max_width': 50, 'name': '深度評論'},
-                # 總體評價列
-                {'col': overall_comment_col, 'min_width': 20, 'max_width': 50, 'name': '總體評價'},
-            ]
+            # 調整評分列寬度
+            for col in [breadth_score_col, depth_score_col, uniqueness_score_col, overall_score_col]:
+                worksheet.column_dimensions[openpyxl.utils.get_column_letter(col)].width = 12
             
-            # 調整所有列的寬度
-            for col_config in columns_to_adjust:
-                self._adjust_column_width(
-                    worksheet, 
-                    col_config['col'], 
-                    col_config['max_width'], 
-                    col_config['min_width'],
-                    col_config['name']
-                )
+            # 調整評論列寬度
+            for col in [breadth_comment_col, depth_comment_col, uniqueness_comment_col, overall_comment_col]:
+                worksheet.column_dimensions[openpyxl.utils.get_column_letter(col)].width = 40
             
             logger.info("列寬自動調整完成")
             
         except Exception as e:
             logger.error(f"自動調整列寬失敗: {e}")
-            # 不拋出異常，讓程序繼續執行
     
     def _adjust_column_width(self, worksheet, col: int, max_width: int, min_width: int, col_name: str = None):
         """調整單列寬度"""
@@ -556,7 +529,7 @@ class CurationResultsWriter:
             else:  # 英文字符
                 width += 1
         return width
-
+    
     def _adjust_scoring_columns_only(self, worksheet):
         """只調整評分相關列的寬度（完整模式）"""
         try:

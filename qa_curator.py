@@ -393,9 +393,11 @@ class BuddhistQACurator:
             parsed_result = {
                 'breadth_score': '解析失敗',
                 'depth_score': '解析失敗', 
+                'uniqueness_score': '解析失敗',
                 'overall_score': '解析失敗',
                 'breadth_comment': '解析失敗',
                 'depth_comment': '解析失敗',
+                'uniqueness_comment': '解析失敗',
                 'overall_comment': '解析失敗',
                 'question_summary': '解析失敗',
                 'answer_summary': '解析失敗'
@@ -415,6 +417,12 @@ class BuddhistQACurator:
                     r'✅ \*\*深度评分：\*\* (\d+)分',  # 簡體中文，有**標記
                     r'✅ 深度评分：(\d+)分'            # 簡體中文，無**標記
                 ],
+                'uniqueness_score': [
+                    r'✅ \*\*獨特性評分：\*\* (\d+)分',  # 繁體中文，有**標記
+                    r'✅ 獨特性評分：(\d+)分',           # 繁體中文，無**標記
+                    r'✅ \*\*独特性评分：\*\* (\d+)分',  # 簡體中文，有**標記
+                    r'✅ 独特性评分：(\d+)分'            # 簡體中文，無**標記
+                ],
                 'overall_score': [
                     r'✅ \*\*綜合評分：\*\* (\d+)分',  # 繁體中文，有**標記
                     r'✅ 綜合評分：(\d+)分',           # 繁體中文，無**標記
@@ -432,6 +440,12 @@ class BuddhistQACurator:
                     r'✅ 深度評論：\s*\n(.+?)(?=\n\n|✅|$)',
                     r'✅ \*\*深度评论：\*\*\s*\n(.+?)(?=\n\n|✅|$)',
                     r'✅ 深度评论：\s*\n(.+?)(?=\n\n|✅|$)'
+                ],
+                'uniqueness_comment': [
+                    r'✅ \*\*獨特性評論：\*\*\s*\n(.+?)(?=\n\n|✅|$)',
+                    r'✅ 獨特性評論：\s*\n(.+?)(?=\n\n|✅|$)',
+                    r'✅ \*\*独特性评论：\*\*\s*\n(.+?)(?=\n\n|✅|$)',
+                    r'✅ 独特性评论：\s*\n(.+?)(?=\n\n|✅|$)'
                 ],
                 'overall_comment': [
                     r'✅ \*\*總體評價：\*\*\s*\n(.+?)(?=\n\n|✅|$)',
@@ -519,9 +533,11 @@ class BuddhistQACurator:
             return {
                 'breadth_score': '解析失敗',
                 'depth_score': '解析失敗',
+                'uniqueness_score': '解析失敗',
                 'overall_score': '解析失敗', 
                 'breadth_comment': '解析失敗',
                 'depth_comment': '解析失敗',
+                'uniqueness_comment': '解析失敗',
                 'overall_comment': '解析失敗',
                 'question_summary': '解析失敗',
                 'answer_summary': '解析失敗'
@@ -899,12 +915,12 @@ class BuddhistQACurator:
         else:
             # 傳統模式（指定行號）
             self.processing_metadata['processing_mode'] = "row_mode"
-            
-            # 確定處理範圍
-            max_row = worksheet.max_row
-            if end_row is None or end_row > max_row:
-                end_row = max_row
-            
+        
+        # 確定處理範圍
+        max_row = worksheet.max_row
+        if end_row is None or end_row > max_row:
+            end_row = max_row
+        
             rows_to_process = list(range(start_row, end_row + 1))
             logger.info(f"傳統模式：處理第 {start_row} 到 {end_row} 行，共 {len(rows_to_process)} 條記錄")
         
@@ -940,9 +956,11 @@ class BuddhistQACurator:
                     'answer': answer[:1000],     # 限制長度
                     'breadth_score': result['breadth_score'],
                     'depth_score': result['depth_score'],
+                    'uniqueness_score': result['uniqueness_score'],
                     'overall_score': result['overall_score'],
                     'breadth_comment': result['breadth_comment'],
                     'depth_comment': result['depth_comment'],
+                    'uniqueness_comment': result['uniqueness_comment'],
                     'overall_comment': result['overall_comment'],
                     'question_summary': result['question_summary'],
                     'answer_summary': result['answer_summary'],
