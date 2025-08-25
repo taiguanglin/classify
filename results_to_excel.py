@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-分類結果寫入Excel程序
-讀取JSON格式的分類結果，批量寫入Excel文件
+精選評分結果寫入Excel程序
+讀取JSON格式的精選評分結果，批量寫入Excel文件，並添加摘要comment
 """
 
 import json
@@ -29,8 +29,8 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-class ResultsToExcel:
-    """分類結果寫入Excel"""
+class CurationResultsWriter:
+    """精選評分結果寫入Excel"""
     
     def __init__(self, config_file: str = 'config.ini'):
         """初始化"""
@@ -40,7 +40,7 @@ class ResultsToExcel:
         logger.info("Excel寫入器初始化完成")
     
     def load_results(self, results_file: str) -> Dict[str, Any]:
-        """載入分類結果"""
+        """載入精選評分結果"""
         if not os.path.exists(results_file):
             raise FileNotFoundError(f"結果文件不存在: {results_file}")
         
@@ -165,23 +165,25 @@ class ResultsToExcel:
         """在標題行添加新列的標題"""
         try:
             # 獲取輸出列配置
-            classification_col = self.config.getint('output', 'classification_column')
-            reason_col = self.config.getint('output', 'reason_column')
-            directory1_col = self.config.getint('output', 'directory1_column')
-            directory2_col = self.config.getint('output', 'directory2_column')
-            directory3_col = self.config.getint('output', 'directory3_column')
+            breadth_score_col = self.config.getint('output', 'breadth_score_column', fallback=24)
+            depth_score_col = self.config.getint('output', 'depth_score_column', fallback=25)
+            overall_score_col = self.config.getint('output', 'overall_score_column', fallback=26)
+            breadth_comment_col = self.config.getint('output', 'breadth_comment_column', fallback=27)
+            depth_comment_col = self.config.getint('output', 'depth_comment_column', fallback=28)
+            overall_comment_col = self.config.getint('output', 'overall_comment_column', fallback=29)
             
             # 使用正確的標題行號
             title_row = getattr(self, 'title_row_new', 6)
-            worksheet.cell(row=title_row, column=classification_col).value = "LLM分類"
-            worksheet.cell(row=title_row, column=reason_col).value = "LLM分析原因"
-            worksheet.cell(row=title_row, column=directory1_col).value = "第一層目錄"
-            worksheet.cell(row=title_row, column=directory2_col).value = "第二層目錄"
-            worksheet.cell(row=title_row, column=directory3_col).value = "第三層目錄"
+            worksheet.cell(row=title_row, column=breadth_score_col).value = "廣度評分"
+            worksheet.cell(row=title_row, column=depth_score_col).value = "深度評分"
+            worksheet.cell(row=title_row, column=overall_score_col).value = "綜合評分"
+            worksheet.cell(row=title_row, column=breadth_comment_col).value = "廣度評論"
+            worksheet.cell(row=title_row, column=depth_comment_col).value = "深度評論"
+            worksheet.cell(row=title_row, column=overall_comment_col).value = "總體評價"
             
             # 設置標題格式
             title_row = getattr(self, 'title_row_new', 6)
-            for col in [classification_col, reason_col, directory1_col, directory2_col, directory3_col]:
+            for col in [breadth_score_col, depth_score_col, overall_score_col, breadth_comment_col, depth_comment_col, overall_comment_col]:
                 cell = worksheet.cell(row=title_row, column=col)
                 cell.font = openpyxl.styles.Font(bold=True)
                 cell.alignment = openpyxl.styles.Alignment(
@@ -195,146 +197,14 @@ class ResultsToExcel:
                     bottom=openpyxl.styles.Side(style='thin')
                 )
             
-            logger.info(f"已添加列標題: 第{classification_col}列(LLM分類), 第{reason_col}列(LLM分析原因), 第{directory1_col}列(第一層目錄), 第{directory2_col}列(第二層目錄), 第{directory3_col}列(第三層目錄)")
+            logger.info(f"已添加列標題: 第{breadth_score_col}列(廣度評分), 第{depth_score_col}列(深度評分), 第{overall_score_col}列(綜合評分), 第{breadth_comment_col}列(廣度評論), 第{depth_comment_col}列(深度評論), 第{overall_comment_col}列(總體評價)")
             
         except Exception as e:
             logger.error(f"添加列標題失敗: {e}")
             # 不拋出異常，讓程序繼續執行
     
-    def _load_directory_system(self) -> Dict[str, Dict[str, str]]:
-        """載入目錄體系"""
-        try:
-            directory_system = {}
-            
-            # 讀取prompt_template.txt文件
-            prompt_file = 'prompt_template.txt'
-            if not os.path.exists(prompt_file):
-                logger.warning(f"Prompt文件不存在: {prompt_file}")
-                return {}
-            
-            with open(prompt_file, 'r', encoding='utf-8') as f:
-                content = f.read()
-            
-            # 解析目錄體系
-            import re
-            
-            # 匹配第一層目錄：I. 【义理】、II. 【修心】等
-            level1_pattern = r'^([IV]+)\.\s*【([^】]+)】'
-            
-            # 匹配第二層目錄：I.I. 真相、II.II. 打坐等
-            level2_pattern = r'^\s*([IV]+\.[IV]+)\.\s*([^：]+)'
-            
-            lines = content.split('\n')
-            current_level1 = None
-            
-            for line in lines:
-                line = line.strip()
-                
-                # 檢查第一層目錄
-                level1_match = re.match(level1_pattern, line)
-                if level1_match:
-                    roman_num = level1_match.group(1)
-                    chinese_name = level1_match.group(2)
-                    current_level1 = roman_num
-                    
-                    directory_system[roman_num] = {
-                        'name': chinese_name,
-                        'full_name': f"{roman_num}.【{chinese_name}】",
-                        'subcategories': {}
-                    }
-                
-                # 檢查第二層目錄
-                elif current_level1:
-                    level2_match = re.match(level2_pattern, line)
-                    if level2_match:
-                        roman_sub = level2_match.group(1)
-                        chinese_sub = level2_match.group(2)
-                        
-                        if current_level1 in directory_system:
-                            directory_system[current_level1]['subcategories'][roman_sub] = {
-                                'name': chinese_sub,
-                                'full_name': f"{roman_sub}. {chinese_sub}"
-                            }
-            
-            logger.info(f"成功載入目錄體系，包含 {len(directory_system)} 個第一層分類")
-            return directory_system
-            
-        except Exception as e:
-            logger.error(f"載入目錄體系失敗: {e}")
-            return {}
-    
-    def _parse_directory_from_classification(self, classification_text: str) -> Dict[str, str]:
-        """從LLM分類結果中解析目錄信息"""
-        try:
-            directory_info = {
-                'directory1': '',
-                'directory2': '',
-                'directory3': ''
-            }
-            
-            if not classification_text:
-                return directory_info
-            
-            # 分割分類結果（按換行符分割）
-            lines = classification_text.strip().split('\n')
-            
-            # 取第一個分類（信心度最高的）
-            if lines:
-                first_classification = lines[0].strip()
-                
-                # 解析目錄結構
-                # 例如："I.I. 真相（80%）" 或 "II.II. 打坐（信心度95%）"
-                if '.' in first_classification:
-                    # 有子分類的情況
-                    # 使用正則表達式提取羅馬數字和分類名稱
-                    import re
-                    
-                    # 匹配模式：I.I. 真相（80%）或 II.II. 打坐（信心度95%）
-                    pattern = r'^([IV]+)\.([IV]+)\.\s*([^（]+)'
-                    match = re.match(pattern, first_classification)
-                    
-                    if match:
-                        level1_roman = match.group(1)
-                        level2_roman = f"{match.group(1)}.{match.group(2)}"
-                        level2_name = match.group(3).strip()
-                        
-                        # 使用目錄體系獲取完整名稱
-                        if level1_roman in self.directory_system:
-                            # 第一層：IV.【生活】
-                            directory_info['directory1'] = self.directory_system[level1_roman]['full_name']
-                            
-                            # 第二層：IV.II. 工作
-                            if level2_roman in self.directory_system[level1_roman]['subcategories']:
-                                directory_info['directory2'] = self.directory_system[level1_roman]['subcategories'][level2_roman]['full_name']
-                            else:
-                                # 如果目錄體系中沒有找到對應的第二層，使用解析出的名稱
-                                directory_info['directory2'] = f"{level2_roman}. {level2_name}"
-                            
-                            # 第三層：目前不存在，預留為空，為未來擴展做準備
-                            directory_info['directory3'] = ''
-                
-                elif '【' in first_classification and '】' in first_classification:
-                    # 只有大分類的情況，如"【义理】（85%）"
-                    # 提取分類名稱
-                    start = first_classification.find('【') + 1
-                    end = first_classification.find('】')
-                    if start > 0 and end > start:
-                        category_name = first_classification[start:end].strip()
-                        # 查找對應的羅馬數字
-                        for roman, info in self.directory_system.items():
-                            if info['name'] == category_name:
-                                directory_info['directory1'] = info['full_name']
-                                break
-            
-            logger.debug(f"解析目錄信息: {directory_info}")
-            return directory_info
-            
-        except Exception as e:
-            logger.error(f"解析目錄信息失敗: {e}")
-            return {'directory1': '', 'directory2': '', 'directory3': ''}
-    
-    def write_classification_result(self, worksheet, row: int, result: Dict[str, Any]):
-        """寫入分類結果到指定行"""
+    def write_curation_result(self, worksheet, row: int, result: Dict[str, Any]):
+        """寫入精選評分結果到指定行"""
         try:
             # 使用行號映射獲取新的行號
             if hasattr(self, 'row_mapping') and row in self.row_mapping:
@@ -343,36 +213,35 @@ class ResultsToExcel:
                 actual_row = row
             
             # 獲取列配置
-            classification_col = self.config.getint('output', 'classification_column')
-            reason_col = self.config.getint('output', 'reason_column')
-            question_col = self.config.getint('excel', 'question_column')
-            answer_col = self.config.getint('excel', 'answer_column')
-            directory1_col = self.config.getint('output', 'directory1_column')
-            directory2_col = self.config.getint('output', 'directory2_column')
-            directory3_col = self.config.getint('output', 'directory3_column')
+            breadth_score_col = self.config.getint('output', 'breadth_score_column', fallback=24)
+            depth_score_col = self.config.getint('output', 'depth_score_column', fallback=25)
+            overall_score_col = self.config.getint('output', 'overall_score_column', fallback=26)
+            breadth_comment_col = self.config.getint('output', 'breadth_comment_column', fallback=27)
+            depth_comment_col = self.config.getint('output', 'depth_comment_column', fallback=28)
+            overall_comment_col = self.config.getint('output', 'overall_comment_column', fallback=29)
             
-            # 從LLM分類結果中解析目錄信息
-            directory_info = self._parse_directory_from_classification(result.get('classification', ''))
+            # 寫入精選評分結果到輸出列
+            self._write_cell_with_format(worksheet, actual_row, breadth_score_col, result.get('breadth_score', ''))
+            self._write_cell_with_format(worksheet, actual_row, depth_score_col, result.get('depth_score', ''))
+            self._write_cell_with_format(worksheet, actual_row, overall_score_col, result.get('overall_score', ''))
+            self._write_cell_with_format(worksheet, actual_row, breadth_comment_col, result.get('breadth_comment', ''))
+            self._write_cell_with_format(worksheet, actual_row, depth_comment_col, result.get('depth_comment', ''))
+            self._write_cell_with_format(worksheet, actual_row, overall_comment_col, result.get('overall_comment', ''))
             
-            # 寫入分類結果到輸出列
-            self._write_cell_with_format(worksheet, actual_row, classification_col, result.get('classification', ''))
-            self._write_cell_with_format(worksheet, actual_row, reason_col, result.get('reason', ''))
-            
-            # 寫入解析出的目錄信息
-            self._write_cell_with_format(worksheet, actual_row, directory1_col, directory_info.get('directory1', ''))
-            self._write_cell_with_format(worksheet, actual_row, directory2_col, directory_info.get('directory2', ''))
-            self._write_cell_with_format(worksheet, actual_row, directory3_col, directory_info.get('directory3', ''))
-            
-            # 設置問題和答案的comment
+            # 設置問題和答案的comment（包含摘要）
             question_summary = result.get('question_summary', '')
             answer_summary = result.get('answer_summary', '')
             
+            # 獲取問題和答案列位置
+            question_col = self.config.getint('excel', 'question_column')
+            answer_col = self.config.getint('excel', 'answer_column')
+            
             # 只在有摘要時才添加註釋
             if question_summary and question_summary.strip():
-                self._set_cell_comment(worksheet, actual_row, question_col, question_summary, '問題重點摘要')
+                self._set_cell_comment(worksheet, actual_row, question_col, question_summary, '問題摘要')
             
-            if answer_summary and answer_summary.strip() and answer_summary != "僅基於問題分類，無法提供回答摘要":
-                self._set_cell_comment(worksheet, actual_row, answer_col, answer_summary, '回答重點摘要')
+            if answer_summary and answer_summary.strip():
+                self._set_cell_comment(worksheet, actual_row, answer_col, answer_summary, '回答摘要')
             
         except Exception as e:
             logger.error(f"寫入第 {row} 行結果失敗: {e}")
@@ -403,19 +272,19 @@ class ResultsToExcel:
             logger.error(f"設置單元格格式失敗 (行{row}, 列{col}): {e}")
             raise
     
-    def _set_cell_comment(self, worksheet, row: int, col: int, comment_text: str, author: str):
+    def _set_cell_comment(self, worksheet, row: int, col: int, comment_text: str, comment_type: str):
         """設置單元格comment"""
         try:
             if comment_text and comment_text.strip():
                 cell = worksheet.cell(row=row, column=col)
                 
-                # 添加"LLM摘要:"前缀
-                formatted_text = f"LLM摘要:\n{comment_text}"
+                # 添加"大模型摘要:"前缀
+                formatted_text = f"大模型摘要:\n{comment_text}"
                 
                 # 創建comment對象
                 comment = openpyxl.comments.Comment(
                     text=formatted_text,
-                    author=author
+                    author=comment_type
                 )
                 
                 # 設置comment樣式
@@ -430,20 +299,20 @@ class ResultsToExcel:
             # 不拋出異常，讓程序繼續執行
     
     def process_results(self, results_file: str, output_file: str = None):
-        """處理分類結果並寫入Excel"""
+        """處理精選評分結果並寫入Excel"""
         # 載入結果
         data = self.load_results(results_file)
         results = data.get('results', {})
         metadata = data.get('metadata', {})
         
         if not results:
-            logger.warning("沒有找到分類結果")
+            logger.warning("沒有找到精選評分結果")
             return
         
         # 確定輸出文件名
         if output_file is None:
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            output_file = f"classified_results_{timestamp}.xlsx"
+            output_file = f"curated_results_{timestamp}.xlsx"
         
         # 創建輸出Excel
         # 優先使用元數據中的源文件，如果不存在則使用配置文件中的文件
@@ -467,15 +336,12 @@ class ResultsToExcel:
         
         workbook, worksheet = self.create_output_excel(source_file, output_file, required_rows)
         
-        # 載入目錄體系
-        self.directory_system = self._load_directory_system()
-        
         # 添加新列的標題
         self._add_column_headers(worksheet)
         
         total_items = len(results)
-        logger.info(f"開始寫入 {total_items} 條分類結果")
-        print(f"📊 開始處理 {total_items} 條分類結果...")
+        logger.info(f"開始寫入 {total_items} 條精選評分結果")
+        print(f"📊 開始處理 {total_items} 條精選評分結果...")
         
         # 統計信息
         success_count = 0
@@ -486,7 +352,7 @@ class ResultsToExcel:
         
         # 使用進度條
         if TQDM_AVAILABLE:
-            pbar = tqdm(sorted_results, desc="寫入分類結果", unit="條")
+            pbar = tqdm(sorted_results, desc="寫入精選評分結果", unit="條")
         else:
             pbar = sorted_results
             print("進度: [", end="")
@@ -502,7 +368,7 @@ class ResultsToExcel:
                     continue
                 
                 # 寫入結果
-                self.write_classification_result(worksheet, row_number, result)
+                self.write_curation_result(worksheet, row_number, result)
                 
                 if result.get('status') == 'success':
                     success_count += 1
@@ -569,27 +435,33 @@ class ResultsToExcel:
         """自動調整列寬和行高以適應內容"""
         try:
             # 獲取輸出列配置
-            classification_col = self.config.getint('output', 'classification_column')
-            reason_col = self.config.getint('output', 'reason_column')
+            breadth_score_col = self.config.getint('output', 'breadth_score_column', fallback=24)
+            depth_score_col = self.config.getint('output', 'depth_score_column', fallback=25)
+            overall_score_col = self.config.getint('output', 'overall_score_column', fallback=26)
+            breadth_comment_col = self.config.getint('output', 'breadth_comment_column', fallback=27)
+            depth_comment_col = self.config.getint('output', 'depth_comment_column', fallback=28)
+            overall_comment_col = self.config.getint('output', 'overall_comment_column', fallback=29)
             
             # 定義所有需要調整的列及其寬度範圍
             columns_to_adjust = [
                 # 列G（答疑日期）- 需要足夠寬度顯示日期
                 {'col': 7, 'min_width': 20, 'max_width': 25, 'name': '答疑日期'},
-                # 列H（问题）- 適中寬度，避免過寬
-                {'col': 8, 'min_width': 30, 'max_width': 60, 'name': '问题'},
-                # 列I（答案）- 適中寬度，避免過寬
-                {'col': 9, 'min_width': 30, 'max_width': 60, 'name': '答案'},
-                # LLM分類列
-                {'col': classification_col, 'min_width': 15, 'max_width': 50, 'name': 'LLM分類'},
-                # LLM分析原因列
-                {'col': reason_col, 'min_width': 15, 'max_width': 50, 'name': 'LLM分析原因'},
-                # 第一層目錄
-                {'col': 14, 'min_width': 15, 'max_width': 30, 'name': '第一層目錄'},
-                # 第二層目錄
-                {'col': 15, 'min_width': 15, 'max_width': 30, 'name': '第二層目錄'},
-                # 第三層目錄
-                {'col': 16, 'min_width': 15, 'max_width': 30, 'name': '第三層目錄'},
+                # 問題列
+                {'col': self.config.getint('excel', 'question_column'), 'min_width': 30, 'max_width': 60, 'name': '问题'},
+                # 答案列
+                {'col': self.config.getint('excel', 'answer_column'), 'min_width': 30, 'max_width': 60, 'name': '答案'},
+                # 廣度評分列
+                {'col': breadth_score_col, 'min_width': 10, 'max_width': 15, 'name': '廣度評分'},
+                # 深度評分列
+                {'col': depth_score_col, 'min_width': 10, 'max_width': 15, 'name': '深度評分'},
+                # 綜合評分列
+                {'col': overall_score_col, 'min_width': 10, 'max_width': 15, 'name': '綜合評分'},
+                # 廣度評論列
+                {'col': breadth_comment_col, 'min_width': 20, 'max_width': 50, 'name': '廣度評論'},
+                # 深度評論列
+                {'col': depth_comment_col, 'min_width': 20, 'max_width': 50, 'name': '深度評論'},
+                # 總體評價列
+                {'col': overall_comment_col, 'min_width': 20, 'max_width': 50, 'name': '總體評價'},
             ]
             
             # 調整所有列的寬度
@@ -648,34 +520,21 @@ class ResultsToExcel:
             else:  # 英文字符
                 width += 1
         return width
-    
-    def _hide_rows_7_to_539(self, worksheet):
-        """隱藏第7行到第539行"""
-        try:
-            # 隱藏從第7行到第539行
-            for row_num in range(7, 540):
-                worksheet.row_dimensions[row_num].hidden = True
-            
-            logger.info(f"已隱藏第7行到第539行（共{539-7+1}行）")
-            
-        except Exception as e:
-            logger.error(f"隱藏行失敗: {e}")
-            # 不拋出異常，讓程序繼續執行
 
 def main():
     """主函數"""
-    parser = argparse.ArgumentParser(description='將分類結果寫入Excel文件')
-    parser.add_argument('results_file', help='分類結果JSON文件路徑')
+    parser = argparse.ArgumentParser(description='將精選評分結果寫入Excel文件')
+    parser.add_argument('results_file', help='精選評分結果JSON文件路徑')
     parser.add_argument('-o', '--output', help='輸出Excel文件路徑（可選）')
     parser.add_argument('-c', '--config', default='config.ini', help='配置文件路徑')
     
     args = parser.parse_args()
     
-    print("分類結果寫入Excel工具")
+    print("精選評分結果寫入Excel工具")
     print("=" * 40)
     
     try:
-        writer = ResultsToExcel(args.config)
+        writer = CurationResultsWriter(args.config)
         output_file = writer.process_results(args.results_file, args.output)
         
         print(f"\n✅ 處理完成！")
