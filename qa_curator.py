@@ -1017,7 +1017,7 @@ class BuddhistQACurator:
             logger.error(f"傳統掃描過濾失敗: {e}")
             return []
 
-    def process_batch(self, start_row: int = None, end_row: int = None, results_file: str = None):
+    def process_batch(self, start_row: int = None, end_row: int = None, results_file: str = None, batch_size: int = 10):
         """批量處理問答精選評分，輸出到JSON文件"""
         # 記錄開始時間
         overall_start_time = time.time()
@@ -1030,18 +1030,20 @@ class BuddhistQACurator:
             config_end_row = self.config.getint('processing', 'end_row', fallback=0)
             end_row = config_end_row if config_end_row > 0 else None
         
+        # 設置分批處理環境
         if results_file is None:
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             results_file = f'qa_curation_results_{timestamp}.json'
         
-        logger.info(f"📁 結果文件: {results_file}")
+        logger.info(f"📁 最終結果文件: {results_file}")
+        logger.info(f"📦 分批大小: {batch_size} 條/批次")
         
-        # 載入已有結果（支持續處理）
-        logger.info("📂 載入已有結果...")
-        load_start = time.time()
-        self.curation_results = self.load_existing_results(results_file)
-        load_time = time.time() - load_start
-        logger.info(f"✅ 已有結果載入完成，耗時: {load_time:.2f}秒")
+        # 設置分批處理目錄和進度追蹤
+        batch_dir, progress_file = self._setup_batch_processing(results_file)
+        progress = self._load_batch_progress(progress_file)
+        
+        # 初始化結果容器（用於內存中的批次累積）
+        self.curation_results = {}
         
         # 載入Excel
         logger.info("📊 載入Excel數據...")
@@ -1109,6 +1111,11 @@ class BuddhistQACurator:
         skipped_count = 0
         timeout_count = 0  # 新增timeout統計
         
+        # 分批處理變量
+        current_batch = {}
+        batch_count = 0
+        current_batch_num = 1
+        
         # 記錄處理開始時間
         processing_start_time = time.time()
         last_save_time = processing_start_time
@@ -1132,9 +1139,9 @@ class BuddhistQACurator:
             self._display_progress_bar(i + 1, total_count, f"處理第{i+1}條")
             
             try:
-                # 檢查是否已處理
+                # 檢查是否已處理（從進度文件中檢查）
                 row_key = str(row)
-                if row_key in self.curation_results:
+                if row in progress.get('completed_rows', []):
                     logger.info(f"⏭️ 第 {row} 行已處理，跳過")
                     skipped_count += 1
                     continue
@@ -1160,10 +1167,10 @@ class BuddhistQACurator:
                 scoring_time = time.time() - scoring_start
                 logger.info(f"✅ AI評分完成，耗時: {scoring_time:.2f}秒")
                 
-                # 保存結果
-                logger.info(f"💾 保存評分結果...")
+                # 保存結果到當前批次
+                logger.info(f"💾 添加到當前批次...")
                 save_start = time.time()
-                self.curation_results[row_key] = {
+                current_batch[row_key] = {
                     'row_number': row,
                     'question': question[:500],  # 限制長度
                     'answer': answer[:1000],     # 限制長度
@@ -1180,8 +1187,12 @@ class BuddhistQACurator:
                     'status': result.get('status', 'success'),  # 使用get方法，默認為success
                     'processed_time': datetime.now().isoformat()
                 }
+                
+                # 更新進度記錄
+                progress['completed_rows'].append(row)
+                batch_count += 1
                 save_time = time.time() - save_start
-                logger.info(f"✅ 結果保存完成，耗時: {save_time:.2f}秒")
+                logger.info(f"✅ 添加到批次完成，耗時: {save_time:.2f}秒")
                 
                 processed_count += 1
                 if result.get('status') == 'success':
@@ -1196,14 +1207,27 @@ class BuddhistQACurator:
                 total_item_time = extract_time + scoring_time + save_time
                 logger.info(f"✅ 第 {row} 行處理完成，總耗時: {total_item_time:.2f}秒")
                 
-                # 每處理10條記錄保存一次
-                if processed_count % 10 == 0:
-                    logger.info(f"💾 執行中間保存...")
-                    save_start = time.time()
-                    self.save_results(results_file)
-                    save_time = time.time() - save_start
-                    last_save_time = time.time()
-                    logger.info(f"✅ 中間保存完成，已處理 {processed_count} 條記錄，保存耗時: {save_time:.2f}秒")
+                # 檢查是否需要保存批次
+                if batch_count >= batch_size:
+                    logger.info(f"📦 批次已滿 ({batch_count} 條)，開始保存批次 {current_batch_num}...")
+                    batch_save_start = time.time()
+                    
+                    # 保存當前批次
+                    batch_file = self._save_batch_results(batch_dir, current_batch_num, current_batch, progress)
+                    if batch_file:
+                        # 保存進度
+                        self._save_batch_progress(progress_file, progress)
+                        
+                        batch_save_time = time.time() - batch_save_start
+                        logger.info(f"✅ 批次 {current_batch_num} 保存完成，耗時: {batch_save_time:.2f}秒")
+                        
+                        # 重置批次變量
+                        current_batch = {}
+                        batch_count = 0
+                        current_batch_num += 1
+                        last_save_time = time.time()
+                    else:
+                        logger.error(f"❌ 批次 {current_batch_num} 保存失敗")
                 
                 # API調用間隔
                 if i < total_count - 1:  # 不是最後一條
@@ -1216,17 +1240,32 @@ class BuddhistQACurator:
                 processed_count += 1
                 continue
         
-        # 最終保存
-        logger.info(f"💾 執行最終保存...")
+        # 保存最後一個批次（如果有剩餘數據）
+        if current_batch:
+            logger.info(f"📦 保存最後批次 {current_batch_num} ({len(current_batch)} 條)...")
+            batch_save_start = time.time()
+            batch_file = self._save_batch_results(batch_dir, current_batch_num, current_batch, progress)
+            if batch_file:
+                self._save_batch_progress(progress_file, progress)
+                batch_save_time = time.time() - batch_save_start
+                logger.info(f"✅ 最後批次保存完成，耗時: {batch_save_time:.2f}秒")
+        
+        # 合併所有批次到最終文件
+        logger.info(f"🔄 合併所有批次到最終文件...")
         final_save_start = time.time()
-        self.save_results(results_file)
+        final_file = self._merge_batch_results(batch_dir, results_file)
         final_save_time = time.time() - final_save_start
+        
+        if final_file:
+            logger.info(f"✅ 最終文件已生成: {final_file}")
+        else:
+            logger.error(f"❌ 最終文件生成失敗")
         
         # 計算總統計
         total_time = time.time() - overall_start_time
         processing_time = time.time() - processing_start_time
         
-        logger.info(f"🎉 批量處理完成！")
+        logger.info(f"🎉 分批處理完成！")
         logger.info(f"📊 統計結果:")
         logger.info(f"   - 總計: {total_count} 條")
         logger.info(f"   - 成功: {success_count} 條")
@@ -1234,10 +1273,14 @@ class BuddhistQACurator:
         logger.info(f"   - 跳過: {skipped_count} 條")
         if timeout_count > 0:
             logger.info(f"   - 超時: {timeout_count} 條 ({timeout_count/processed_count*100:.1f}%)")
+        logger.info(f"📦 分批處理統計:")
+        logger.info(f"   - 批次大小: {batch_size} 條/批次")
+        logger.info(f"   - 總批次數: {current_batch_num - 1 + (1 if current_batch else 0)} 個")
+        logger.info(f"   - 批次目錄: {batch_dir}")
         logger.info(f"⏱️ 時間統計:")
         logger.info(f"   - 總耗時: {total_time:.2f}秒 ({total_time/60:.1f}分鐘)")
         logger.info(f"   - 處理耗時: {processing_time:.2f}秒 ({processing_time/60:.1f}分鐘)")
-        logger.info(f"   - 最終保存耗時: {final_save_time:.2f}秒")
+        logger.info(f"   - 最終合併耗時: {final_save_time:.2f}秒")
         if processed_count > 0:
             logger.info(f"🚀 性能統計:")
             logger.info(f"   - 平均速度: {processed_count/processing_time:.2f} 條/秒")
@@ -1247,6 +1290,148 @@ class BuddhistQACurator:
                 logger.info(f"   - 建議調整timeout設置: 當前{self.timeout}秒")
         
         return results_file
+
+    def _setup_batch_processing(self, base_filename: str) -> tuple:
+        """設置分批處理環境"""
+        # 創建批次目錄
+        batch_dir = f"batch_results_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        if not os.path.exists(batch_dir):
+            os.makedirs(batch_dir)
+            logger.info(f"📁 創建批次目錄: {batch_dir}")
+        
+        # 進度文件路徑
+        progress_file = os.path.join(batch_dir, "progress.json")
+        
+        return batch_dir, progress_file
+    
+    def _load_batch_progress(self, progress_file: str) -> dict:
+        """載入批次處理進度"""
+        if os.path.exists(progress_file):
+            try:
+                with open(progress_file, 'r', encoding='utf-8') as f:
+                    progress = json.load(f)
+                logger.info(f"📂 載入進度文件: 已處理 {len(progress.get('completed_rows', []))} 條")
+                return progress
+            except Exception as e:
+                logger.warning(f"⚠️ 載入進度文件失敗: {e}")
+        
+        return {
+            'completed_rows': [],
+            'batch_files': [],
+            'start_time': datetime.now().isoformat(),
+            'last_update': datetime.now().isoformat()
+        }
+    
+    def _save_batch_progress(self, progress_file: str, progress: dict):
+        """保存批次處理進度"""
+        try:
+            progress['last_update'] = datetime.now().isoformat()
+            with open(progress_file, 'w', encoding='utf-8') as f:
+                json.dump(progress, f, ensure_ascii=False, indent=2)
+            logger.debug(f"💾 進度已保存: {len(progress.get('completed_rows', []))} 條完成")
+        except Exception as e:
+            logger.error(f"❌ 保存進度失敗: {e}")
+    
+    def _save_batch_results(self, batch_dir: str, batch_num: int, batch_results: dict, progress: dict):
+        """保存單個批次的結果"""
+        try:
+            batch_filename = f"batch_{batch_num:03d}.json"
+            batch_filepath = os.path.join(batch_dir, batch_filename)
+            
+            # 準備批次數據
+            batch_data = {
+                'metadata': {
+                    'batch_number': batch_num,
+                    'batch_size': len(batch_results),
+                    'created_time': datetime.now().isoformat(),
+                    'source_file': self.processing_metadata.get('source_file', ''),
+                    'processing_mode': self.processing_metadata.get('processing_mode', '')
+                },
+                'results': batch_results
+            }
+            
+            # 保存批次文件
+            with open(batch_filepath, 'w', encoding='utf-8') as f:
+                json.dump(batch_data, f, ensure_ascii=False, indent=2)
+            
+            # 更新進度記錄
+            if batch_filename not in progress.get('batch_files', []):
+                progress.setdefault('batch_files', []).append(batch_filename)
+            
+            logger.info(f"💾 批次 {batch_num} 已保存: {batch_filename} ({len(batch_results)} 條)")
+            return batch_filepath
+            
+        except Exception as e:
+            logger.error(f"❌ 保存批次 {batch_num} 失敗: {e}")
+            return None
+    
+    def _merge_batch_results(self, batch_dir: str, final_filename: str = None) -> str:
+        """合併所有批次結果到最終文件"""
+        try:
+            if final_filename is None:
+                timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+                final_filename = f"qa_curation_results_{timestamp}.json"
+            
+            # 收集所有批次文件
+            batch_files = []
+            for filename in os.listdir(batch_dir):
+                if filename.startswith('batch_') and filename.endswith('.json'):
+                    batch_files.append(filename)
+            
+            batch_files.sort()  # 按文件名排序
+            
+            # 合併結果
+            merged_results = {}
+            total_processed = 0
+            total_success = 0
+            
+            for batch_file in batch_files:
+                batch_path = os.path.join(batch_dir, batch_file)
+                try:
+                    with open(batch_path, 'r', encoding='utf-8') as f:
+                        batch_data = json.load(f)
+                    
+                    # 合併結果
+                    batch_results = batch_data.get('results', {})
+                    merged_results.update(batch_results)
+                    
+                    # 統計信息
+                    total_processed += len(batch_results)
+                    total_success += sum(1 for r in batch_results.values() if r.get('status') == 'success')
+                    
+                except Exception as e:
+                    logger.warning(f"⚠️ 讀取批次文件 {batch_file} 失敗: {e}")
+            
+            # 準備最終數據
+            final_data = {
+                'metadata': {
+                    'source_file': self.processing_metadata.get('source_file', ''),
+                    'sheet_name': self.processing_metadata.get('sheet_name', ''),
+                    'llm_model': self.processing_metadata.get('llm_model', ''),
+                    'processing_start_time': self.processing_metadata.get('processing_start_time', ''),
+                    'processing_end_time': datetime.now().isoformat(),
+                    'total_processed': total_processed,
+                    'total_success': total_success,
+                    'total_failed': total_processed - total_success,
+                    'processing_mode': self.processing_metadata.get('processing_mode', ''),
+                    'batch_processing': True,
+                    'batch_count': len(batch_files)
+                },
+                'results': merged_results
+            }
+            
+            # 保存最終文件
+            with open(final_filename, 'w', encoding='utf-8') as f:
+                json.dump(final_data, f, ensure_ascii=False, indent=2)
+            
+            logger.info(f"✅ 合併完成: {final_filename}")
+            logger.info(f"📊 總計: {total_processed} 條，成功: {total_success} 條，來自 {len(batch_files)} 個批次")
+            
+            return final_filename
+            
+        except Exception as e:
+            logger.error(f"❌ 合併批次結果失敗: {e}")
+            return None
 
     def _display_progress_bar(self, current: int, total: int, status: str = ""):
         """顯示進度條"""

@@ -13,7 +13,8 @@ import logging
 from datetime import datetime
 import os
 import argparse
-from typing import Dict, Any
+import glob
+from typing import Dict, Any, List
 from copy import copy
 try:
     from tqdm import tqdm
@@ -38,6 +39,133 @@ class CurationResultsWriter:
         self.config.read(config_file, encoding='utf-8')
         
         logger.info("Excel寫入器初始化完成")
+    
+    def find_json_files(self, input_path: str) -> List[str]:
+        """查找JSON文件"""
+        json_files = []
+        
+        if os.path.isfile(input_path):
+            # 單個文件
+            if input_path.endswith('.json'):
+                json_files.append(input_path)
+            else:
+                raise ValueError(f"文件不是JSON格式: {input_path}")
+        elif os.path.isdir(input_path):
+            # 資料夾
+            logger.info(f"掃描資料夾: {input_path}")
+            
+            # 查找所有JSON文件
+            pattern = os.path.join(input_path, "*.json")
+            all_json_files = glob.glob(pattern)
+            
+            # 過濾掉progress.json
+            for file_path in all_json_files:
+                filename = os.path.basename(file_path)
+                if filename.lower() == 'progress.json':
+                    logger.info(f"跳過進度文件: {filename}")
+                    continue
+                json_files.append(file_path)
+            
+            if not json_files:
+                raise ValueError(f"資料夾中沒有找到有效的JSON文件: {input_path}")
+            
+            logger.info(f"找到 {len(json_files)} 個JSON文件")
+            for file_path in json_files:
+                logger.info(f"  - {os.path.basename(file_path)}")
+        else:
+            raise FileNotFoundError(f"路徑不存在: {input_path}")
+        
+        return sorted(json_files)
+    
+    def merge_batch_results(self, json_files: List[str]) -> Dict[str, Any]:
+        """合併多個批次結果文件"""
+        logger.info(f"開始合併 {len(json_files)} 個JSON文件")
+        
+        merged_results = {}
+        total_processed = 0
+        total_success = 0
+        total_failed = 0
+        processing_start_time = None
+        processing_end_time = None
+        source_file = ""
+        sheet_name = ""
+        llm_model = ""
+        
+        for i, json_file in enumerate(json_files):
+            try:
+                logger.info(f"處理文件 {i+1}/{len(json_files)}: {os.path.basename(json_file)}")
+                
+                with open(json_file, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                
+                # 處理批次文件格式
+                if 'results' in data:
+                    # 標準格式或最終合併文件
+                    batch_results = data['results']
+                    metadata = data.get('metadata', {})
+                else:
+                    # 可能是批次文件格式
+                    batch_results = data
+                    metadata = {}
+                
+                # 合併結果
+                merged_results.update(batch_results)
+                
+                # 統計信息
+                batch_size = len(batch_results)
+                total_processed += batch_size
+                
+                # 統計成功/失敗
+                for result in batch_results.values():
+                    if result.get('status') == 'success':
+                        total_success += 1
+                    else:
+                        total_failed += 1
+                
+                # 收集元數據
+                if metadata:
+                    if not source_file:
+                        source_file = metadata.get('source_file', '')
+                    if not sheet_name:
+                        sheet_name = metadata.get('sheet_name', '')
+                    if not llm_model:
+                        llm_model = metadata.get('llm_model', '')
+                    
+                    # 時間範圍
+                    start_time = metadata.get('processing_start_time')
+                    end_time = metadata.get('processing_end_time')
+                    
+                    if start_time and (not processing_start_time or start_time < processing_start_time):
+                        processing_start_time = start_time
+                    if end_time and (not processing_end_time or end_time > processing_end_time):
+                        processing_end_time = end_time
+                
+                logger.info(f"  合併 {batch_size} 條記錄")
+                
+            except Exception as e:
+                logger.warning(f"跳過無效文件 {json_file}: {e}")
+                continue
+        
+        # 構建合併後的數據
+        merged_data = {
+            'metadata': {
+                'source_file': source_file,
+                'sheet_name': sheet_name,
+                'llm_model': llm_model,
+                'processing_start_time': processing_start_time or datetime.now().isoformat(),
+                'processing_end_time': processing_end_time or datetime.now().isoformat(),
+                'total_processed': total_processed,
+                'total_success': total_success,
+                'total_failed': total_failed,
+                'batch_processing': True,
+                'merged_from_files': len(json_files),
+                'merge_time': datetime.now().isoformat()
+            },
+            'results': merged_results
+        }
+        
+        logger.info(f"✅ 合併完成: 總計 {total_processed} 條記錄，成功 {total_success} 條")
+        return merged_data
     
     def load_results(self, results_file: str) -> Dict[str, Any]:
         """載入精選評分結果"""
@@ -324,10 +452,21 @@ class CurationResultsWriter:
             logger.error(f"❌ 設置comment失敗 (行{row}, 列{col}): {e}")
             # 不拋出異常，讓程序繼續執行
     
-    def process_results(self, results_file: str, output_file: str = None):
+    def process_results(self, input_path: str, output_file: str = None):
         """處理精選評分結果並寫入Excel"""
-        # 載入結果
-        data = self.load_results(results_file)
+        # 查找JSON文件
+        json_files = self.find_json_files(input_path)
+        
+        # 載入和合併結果
+        if len(json_files) == 1:
+            # 單個文件
+            logger.info("處理單個JSON文件")
+            data = self.load_results(json_files[0])
+        else:
+            # 多個文件，需要合併
+            logger.info(f"處理多個JSON文件，開始合併...")
+            data = self.merge_batch_results(json_files)
+        
         results = data.get('results', {})
         metadata = data.get('metadata', {})
         
@@ -599,19 +738,33 @@ class CurationResultsWriter:
 
 def main():
     """主函數"""
-    parser = argparse.ArgumentParser(description='將精選評分結果寫入Excel文件')
-    parser.add_argument('results_file', help='精選評分結果JSON文件路徑')
+    parser = argparse.ArgumentParser(
+        description='將精選評分結果寫入Excel文件',
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+使用示例:
+  # 處理單個JSON文件
+  python3 results_to_excel.py results.json
+  
+  # 處理整個批次資料夾
+  python3 results_to_excel.py batch_results_20250825_152547/
+  
+  # 指定輸出文件
+  python3 results_to_excel.py batch_results_20250825_152547/ -o output.xlsx
+        """
+    )
+    parser.add_argument('input_path', help='精選評分結果JSON文件路徑或包含批次文件的資料夾路徑')
     parser.add_argument('-o', '--output', help='輸出Excel文件路徑（可選）')
     parser.add_argument('-c', '--config', default='config.ini', help='配置文件路徑')
     
     args = parser.parse_args()
     
-    print("精選評分結果寫入Excel工具")
-    print("=" * 40)
+    print("精選評分結果寫入Excel工具 - 支援資料夾批次處理")
+    print("=" * 50)
     
     try:
         writer = CurationResultsWriter(args.config)
-        output_file = writer.process_results(args.results_file, args.output)
+        output_file = writer.process_results(args.input_path, args.output)
         
         print(f"\n✅ 處理完成！")
         print(f"📁 輸出文件: {output_file}")
