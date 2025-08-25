@@ -252,10 +252,10 @@ class CurationResultsWriter:
             answer_col = self.config.getint('excel', 'answer_column')
             
             if result.get('question_summary') != '解析失敗':
-                self._set_cell_comment(worksheet, row, question_col, f"大模型摘要: {result['question_summary']}")
+                self._set_cell_comment(worksheet, row, question_col, f"大模型摘要: {result['question_summary']}", "問題摘要")
             
             if result.get('answer_summary') != '解析失敗':
-                self._set_cell_comment(worksheet, row, answer_col, f"大模型摘要: {result['answer_summary']}")
+                self._set_cell_comment(worksheet, row, answer_col, f"大模型摘要: {result['answer_summary']}", "回答摘要")
             
             logger.info(f"第{row}行精選評分結果寫入完成")
             
@@ -293,12 +293,9 @@ class CurationResultsWriter:
             if comment_text and comment_text.strip():
                 cell = worksheet.cell(row=row, column=col)
                 
-                # 添加"大模型摘要:"前缀
-                formatted_text = f"大模型摘要:\n{comment_text}"
-                
                 # 創建comment對象
                 comment = openpyxl.comments.Comment(
-                    text=formatted_text,
+                    text=comment_text,
                     author=comment_type
                 )
                 
@@ -309,8 +306,10 @@ class CurationResultsWriter:
                 # 將comment添加到單元格
                 cell.comment = comment
                 
+                logger.info(f"✅ 成功添加評論到單元格 (行{row}, 列{col}): {comment_text[:50]}...")
+                
         except Exception as e:
-            logger.error(f"設置comment失敗 (行{row}, 列{col}): {e}")
+            logger.error(f"❌ 設置comment失敗 (行{row}, 列{col}): {e}")
             # 不拋出異常，讓程序繼續執行
     
     def process_results(self, results_file: str, output_file: str = None):
@@ -428,9 +427,9 @@ class CurationResultsWriter:
         # 根據輸出模式進行不同的後處理
         if output_mode == 'compact':
             # 精簡模式：自動調整列寬和行高
-        print("📏 正在調整列寬...")
-        self._auto_adjust_columns_and_rows(worksheet)
-        print("👁️ 輸出文件已經只包含需要的行，無需隱藏行...")
+            print("📏 正在調整列寬...")
+            self._auto_adjust_columns_and_rows(worksheet)
+            print("👁️ 輸出文件已經只包含需要的行，無需隱藏行...")
             logger.info("精簡模式：輸出文件已經只包含需要的行，無需隱藏行")
         else:
             # 完整模式：保持原有結構，只調整評分相關列
@@ -476,15 +475,20 @@ class CurationResultsWriter:
             uniqueness_comment_col = self.config.getint('output', 'uniqueness_comment_column')
             overall_comment_col = self.config.getint('output', 'overall_comment_column')
             
-            # 調整評分列寬度
+            # 調整評分列寬度（數字列，固定寬度）
             for col in [breadth_score_col, depth_score_col, uniqueness_score_col, overall_score_col]:
-                worksheet.column_dimensions[openpyxl.utils.get_column_letter(col)].width = 12
+                worksheet.column_dimensions[openpyxl.utils.get_column_letter(col)].width = 15
             
-            # 調整評論列寬度
+            # 調整評論列寬度（文本列，適中寬度，支持自動換行）
             for col in [breadth_comment_col, depth_comment_col, uniqueness_comment_col, overall_comment_col]:
                 worksheet.column_dimensions[openpyxl.utils.get_column_letter(col)].width = 40
+                # 設置自動換行
+                for row in range(1, worksheet.max_row + 1):
+                    cell = worksheet.cell(row=row, column=col)
+                    if cell.value:
+                        cell.alignment = openpyxl.styles.Alignment(wrap_text=True, vertical='top')
             
-            logger.info("列寬自動調整完成")
+            logger.info("列寬自動調整完成，評論列已設置自動換行")
             
         except Exception as e:
             logger.error(f"自動調整列寬失敗: {e}")
@@ -515,18 +519,27 @@ class CurationResultsWriter:
             # 設置列寬
             worksheet.column_dimensions[openpyxl.utils.get_column_letter(col)].width = adjusted_width
             
+            # 如果是評論列，設置自動換行
+            if col_name and '評論' in col_name or col_name and '評價' in col_name:
+                for row in range(1, total_rows + 1):
+                    cell = worksheet.cell(row=row, column=col)
+                    if cell.value:
+                        cell.alignment = openpyxl.styles.Alignment(wrap_text=True, vertical='top')
+            
             logger.debug(f"列 {col_name or openpyxl.utils.get_column_letter(col)} 寬度調整為: {adjusted_width}")
             
         except Exception as e:
             logger.error(f"調整列 {col_name or col} 寬度失敗: {e}")
     
     def _calculate_text_width(self, text: str) -> int:
-        """計算文本寬度（中文字符算2個字符寬度）"""
+        """計算文本寬度（中文字符算2個字符寬度，標點符號算1個字符寬度）"""
         width = 0
         for char in text:
             if ord(char) > 127:  # 中文字符
                 width += 2
-            else:  # 英文字符
+            elif char in '，。！？；：""''（）【】《》':  # 中文標點符號
+                width += 1
+            else:  # 英文字符和英文標點
                 width += 1
         return width
     
@@ -534,21 +547,25 @@ class CurationResultsWriter:
         """只調整評分相關列的寬度（完整模式）"""
         try:
             # 獲取輸出列配置
-            breadth_score_col = self.config.getint('output', 'breadth_score_column', fallback=24)
-            depth_score_col = self.config.getint('output', 'depth_score_column', fallback=25)
-            overall_score_col = self.config.getint('output', 'overall_score_column', fallback=26)
-            breadth_comment_col = self.config.getint('output', 'breadth_comment_column', fallback=27)
-            depth_comment_col = self.config.getint('output', 'depth_comment_column', fallback=28)
-            overall_comment_col = self.config.getint('output', 'overall_comment_column', fallback=29)
+            breadth_score_col = self.config.getint('output', 'breadth_score_column')
+            depth_score_col = self.config.getint('output', 'depth_score_column')
+            uniqueness_score_col = self.config.getint('output', 'uniqueness_score_column')
+            overall_score_col = self.config.getint('output', 'overall_score_column')
+            breadth_comment_col = self.config.getint('output', 'breadth_comment_column')
+            depth_comment_col = self.config.getint('output', 'depth_comment_column')
+            uniqueness_comment_col = self.config.getint('output', 'uniqueness_comment_column')
+            overall_comment_col = self.config.getint('output', 'overall_comment_column')
             
             # 只調整評分相關列
             scoring_columns = [
-                {'col': breadth_score_col, 'min_width': 10, 'max_width': 15, 'name': '廣度評分'},
-                {'col': depth_score_col, 'min_width': 10, 'max_width': 15, 'name': '深度評分'},
-                {'col': overall_score_col, 'min_width': 10, 'max_width': 15, 'name': '綜合評分'},
-                {'col': breadth_comment_col, 'min_width': 20, 'max_width': 50, 'name': '廣度評論'},
-                {'col': depth_comment_col, 'min_width': 20, 'max_width': 50, 'name': '深度評論'},
-                {'col': overall_comment_col, 'min_width': 20, 'max_width': 50, 'name': '總體評價'},
+                {'col': breadth_score_col, 'min_width': 12, 'max_width': 18, 'name': '廣度評分'},
+                {'col': depth_score_col, 'min_width': 12, 'max_width': 18, 'name': '深度評分'},
+                {'col': uniqueness_score_col, 'min_width': 12, 'max_width': 18, 'name': '獨特性評分'},
+                {'col': overall_score_col, 'min_width': 12, 'max_width': 18, 'name': '綜合評分'},
+                {'col': breadth_comment_col, 'min_width': 30, 'max_width': 40, 'name': '廣度評論'},
+                {'col': depth_comment_col, 'min_width': 30, 'max_width': 40, 'name': '深度評論'},
+                {'col': uniqueness_comment_col, 'min_width': 30, 'max_width': 40, 'name': '獨特性評論'},
+                {'col': overall_comment_col, 'min_width': 30, 'max_width': 40, 'name': '總體評價'},
             ]
             
             # 調整評分相關列的寬度

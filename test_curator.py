@@ -18,10 +18,14 @@ def test_prompt_template():
         with open('prompt_template.txt', 'r', encoding='utf-8') as f:
             content = f.read()
         
-        # 檢查是否包含必要的關鍵詞
-        required_keywords = ['廣度評分', '深度評分', '綜合評分', '廣度評論', '深度評論', '總體評價', '問題摘要', '回答摘要']
-        missing_keywords = []
+        # 檢查關鍵詞（使用簡體中文）
+        required_keywords = [
+            '广度评分', '深度评分', '独特性评分', '综合评分',
+            '广度评论', '深度评论', '独特性评论', '总体评价',
+            '问题摘要', '回答摘要'
+        ]
         
+        missing_keywords = []
         for keyword in required_keywords:
             if keyword not in content:
                 missing_keywords.append(keyword)
@@ -29,12 +33,12 @@ def test_prompt_template():
         if missing_keywords:
             print(f"❌ 提示詞模板缺少關鍵詞: {', '.join(missing_keywords)}")
             return False
-        else:
-            print("✅ 提示詞模板檢查通過")
-            return True
-            
+        
+        print("✅ 提示詞模板檢查通過")
+        return True
+        
     except Exception as e:
-        print(f"❌ 讀取提示詞模板失敗: {e}")
+        print(f"❌ 提示詞模板檢查失敗: {e}")
         return False
 
 def test_config_file():

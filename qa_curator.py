@@ -17,7 +17,7 @@ from datetime import datetime
 import os
 import json
 import argparse
-from typing import Dict, List, Tuple, Optional, Union
+from typing import Dict, List, Tuple, Optional, Union, Any
 
 # 設置日誌函數
 def setup_logging():
@@ -289,97 +289,118 @@ class BuddhistQACurator:
             logger.error(f"提取第 {row} 行內容失敗: {e}")
             return "", ""
 
-    def evaluate_qa_quality(self, question: str, answer: str) -> Dict[str, str]:
-        """使用OpenAI對問答進行質量評估"""
-        if not question and not answer:
-            return {
-                'breadth_score': '無法評分',
-                'depth_score': '無法評分',
-                'overall_score': '無法評分',
-                'breadth_comment': '問題和回答均為空',
-                'depth_comment': '問題和回答均為空',
-                'overall_comment': '問題和回答均為空',
-                'question_summary': '無內容',
-                'answer_summary': '無內容',
-                'status': 'empty'
-            }
-        
-        # 構建prompt
-        prompt = self.prompt_template.format(
-            title=question,
-            answer=answer
-        )
-        
-        # 记录发送给LLM的完整prompt（调试时使用）
-        # logger.info(f"发送给LLM的完整prompt: {prompt}")
-        
+    def evaluate_qa_quality(self, question: str, answer: str) -> Dict[str, Any]:
+        """評估問答質量"""
         try:
-            # 根据模型类型选择正确的参数
+            # 記錄開始時間
+            start_time = time.time()
+            logger.info(f"🤖 開始AI評分，問題長度: {len(question)}字，答案長度: {len(answer)}字")
+            
+            # 格式化提示詞
+            prompt_start = time.time()
+            formatted_prompt = self.prompt_template.format(title=question, answer=answer)
+            prompt_time = time.time() - prompt_start
+            logger.info(f"📝 提示詞格式化完成，耗時: {prompt_time:.2f}秒")
+            
+            # 準備API參數
             api_params = {
-                "model": self.model,
-                "messages": [
-                    {"role": "system", "content": "你是一個專業的佛學專家，專門負責對佛學問答進行精選評分。"},
-                    {"role": "user", "content": prompt}
-                ]
+                'model': self.model,
+                'messages': [{'role': 'user', 'content': formatted_prompt}],
+                'temperature': self.temperature,
+                'max_tokens': self.max_tokens
             }
             
-            # 检查是否使用ChatMock（与初始化时保持一致）
-            if self.api_type:
-                api_type = self.api_type.lower()
-            else:
-                api_type = self.config.get('api', 'type', fallback='openai').lower()
+            if self.max_tokens:
+                api_params['max_tokens'] = self.max_tokens
             
-            if api_type == 'chatmock':
-                # ChatMock特有的参数
-                reasoning_effort = self.config.get('chatmock', 'reasoning_effort', fallback='medium')
-                reasoning_summary = self.config.get('chatmock', 'reasoning_summary', fallback='auto')
-                
-                if reasoning_effort and reasoning_effort != 'medium':
-                    api_params["reasoning_effort"] = reasoning_effort
-                if reasoning_summary and reasoning_summary != 'auto':
-                    api_params["reasoning_summary"] = reasoning_summary
-                
-                logger.debug(f"ChatMock参数 - 推理努力: {reasoning_effort}, 推理摘要: {reasoning_summary}")
-            else:
-                # OpenAI API参数
-                if self.model.startswith('gpt-5'):
-                    # GPT-5模型不支持自定义temperature，也不设置max_completion_tokens
-                    # 不设置temperature参数，使用默认值
-                    # 不设置max_completion_tokens，让模型使用默认限制
-                    logger.debug("GPT-5模型：使用默认temperature和token限制")
-                else:
-                    # 其他模型使用max_tokens和temperature
-                    api_params["temperature"] = self.temperature
-                    api_params["max_tokens"] = self.max_tokens
-                    logger.debug(f"GPT-4模型：使用temperature={self.temperature}, max_tokens={self.max_tokens}")
+            logger.info(f"🔧 API參數準備完成: 模型={self.model}, 溫度={self.temperature}")
             
-            response = self.client.chat.completions.create(**api_params)
+            # 執行API調用
+            logger.info(f"🌐 開始API調用...")
+            api_start = time.time()
             
-            result_text = response.choices[0].message.content.strip()
+            # 添加重試機制
+            max_retries = 3
+            retry_count = 0
+            last_error = None
             
-            # 保存原始响应用于调试（调试时使用）
-            # logger.info(f"原始API响应: {result_text}")
+            while retry_count < max_retries:
+                try:
+                    if retry_count > 0:
+                        logger.info(f"🔄 第 {retry_count} 次重試...")
+                        time.sleep(2 ** retry_count)  # 指數退避
+                    
+                    response = self.client.chat.completions.create(**api_params)
+                    api_time = time.time() - api_start
+                    logger.info(f"✅ API調用成功，耗時: {api_time:.2f}秒")
+                    
+                    # 檢查響應
+                    if not response.choices or not response.choices[0].message:
+                        raise ValueError("API響應格式異常")
+                    
+                    content = response.choices[0].message.content
+                    logger.info(f"📄 收到AI響應，長度: {len(content)}字符")
+                    
+                    # 解析結果
+                    logger.info(f"🔍 開始解析LLM評分結果...")
+                    parse_start = time.time()
+                    parsed_result = self.parse_evaluation_result(content)
+                    parse_time = time.time() - parse_start
+                    
+                    # 統計解析結果
+                    success_fields = sum(1 for v in parsed_result.values() if v != '解析失敗')
+                    total_fields = len(parsed_result)
+                    logger.info(f"✅ 解析完成: {success_fields}/{total_fields} 個字段成功，耗時: {parse_time:.2f}秒")
+                    
+                    # 計算總耗時
+                    total_time = time.time() - start_time
+                    logger.info(f"🎯 評分完成，總耗時: {total_time:.2f}秒")
+                    
+                    return parsed_result
+                    
+                except Exception as e:
+                    last_error = e
+                    retry_count += 1
+                    api_time = time.time() - api_start
+                    
+                    if retry_count < max_retries:
+                        logger.warning(f"⚠️ API調用失敗 (第{retry_count}次): {e}")
+                        logger.warning(f"⏱️ 已耗時: {api_time:.2f}秒，準備重試...")
+                    else:
+                        logger.error(f"❌ API調用最終失敗，已重試{max_retries}次: {e}")
+                        logger.error(f"⏱️ 總耗時: {api_time:.2f}秒")
+                        break
             
-            parsed_result = self.parse_evaluation_result(result_text)
-            parsed_result['status'] = 'success'
-            
-            # 保存原始响应到结果中
-            parsed_result['raw_response'] = result_text
-            
-            return parsed_result
+            # 所有重試都失敗了
+            logger.error(f"💥 AI評分完全失敗，返回錯誤結果")
+            return {
+                'breadth_score': 'API調用失敗',
+                'depth_score': 'API調用失敗',
+                'uniqueness_score': 'API調用失敗',
+                'overall_score': 'API調用失敗',
+                'breadth_comment': f'API調用失敗: {str(last_error)}',
+                'depth_comment': f'API調用失敗: {str(last_error)}',
+                'uniqueness_comment': f'API調用失敗: {str(last_error)}',
+                'overall_comment': f'API調用失敗: {str(last_error)}',
+                'question_summary': 'API調用失敗',
+                'answer_summary': 'API調用失敗',
+                'status': 'error'
+            }
             
         except Exception as e:
-            logger.error(f"OpenAI API調用失敗: {e}")
+            logger.error(f"❌ 評分過程發生未預期錯誤: {e}")
             return {
-                'breadth_score': 'API錯誤',
-                'depth_score': 'API錯誤',
-                'overall_score': 'API錯誤',
-                'breadth_comment': f'API調用失敗: {str(e)}',
-                'depth_comment': f'API調用失敗: {str(e)}',
-                'overall_comment': f'API調用失敗: {str(e)}',
-                'question_summary': f'API調用失敗: {str(e)}',
-                'answer_summary': f'API調用失敗: {str(e)}',
-                'status': 'api_error'
+                'breadth_score': '系統錯誤',
+                'depth_score': '系統錯誤',
+                'uniqueness_score': '系統錯誤',
+                'overall_score': '系統錯誤',
+                'breadth_comment': f'系統錯誤: {str(e)}',
+                'depth_comment': f'系統錯誤: {str(e)}',
+                'uniqueness_comment': f'系統錯誤: {str(e)}',
+                'overall_comment': f'系統錯誤: {str(e)}',
+                'question_summary': '系統錯誤',
+                'answer_summary': '系統錯誤',
+                'status': 'error'
             }
 
     def parse_evaluation_result(self, result_text: str) -> Dict:
@@ -400,7 +421,8 @@ class BuddhistQACurator:
                 'uniqueness_comment': '解析失敗',
                 'overall_comment': '解析失敗',
                 'question_summary': '解析失敗',
-                'answer_summary': '解析失敗'
+                'answer_summary': '解析失敗',
+                'status': 'success'  # 添加狀態字段
             }
             
             # 改進的正則表達式，匹配LLM的實際輸出格式（支持多種格式）
@@ -516,6 +538,21 @@ class BuddhistQACurator:
                                 parsed_result[field] = alt_match.group(1).strip()
                                 logger.info(f"使用備用模式成功解析 {field}: {parsed_result[field][:50]}...")
                                 break
+            
+            # 計算綜合評分（加權平均）
+            try:
+                breadth = int(parsed_result['breadth_score'])
+                depth = int(parsed_result['depth_score'])
+                uniqueness = int(parsed_result['uniqueness_score'])
+                
+                # 加權平均：廣度30%，深度40%，獨特性30%
+                overall_score = breadth * 0.3 + depth * 0.4 + uniqueness * 0.3
+                parsed_result['overall_score'] = round(overall_score)
+                logger.info(f"✅ 綜合評分計算完成: {breadth}×0.3 + {depth}×0.4 + {uniqueness}×0.3 = {overall_score:.1f} → {parsed_result['overall_score']}")
+                
+            except (ValueError, TypeError) as e:
+                logger.warning(f"⚠️ 綜合評分計算失敗: {e}")
+                parsed_result['overall_score'] = '計算失敗'
             
             # 檢查解析結果
             success_count = sum(1 for v in parsed_result.values() if v != '解析失敗')
@@ -868,6 +905,10 @@ class BuddhistQACurator:
 
     def process_batch(self, start_row: int = None, end_row: int = None, results_file: str = None):
         """批量處理問答精選評分，輸出到JSON文件"""
+        # 記錄開始時間
+        overall_start_time = time.time()
+        logger.info(f"🚀 開始批量處理 - 時間: {datetime.now().strftime('%H:%M:%S')}")
+        
         # 載入配置
         if start_row is None:
             start_row = self.config.getint('processing', 'start_row', fallback=2)
@@ -879,23 +920,39 @@ class BuddhistQACurator:
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             results_file = f'qa_curation_results_{timestamp}.json'
         
+        logger.info(f"📁 結果文件: {results_file}")
+        
         # 載入已有結果（支持續處理）
+        logger.info("📂 載入已有結果...")
+        load_start = time.time()
         self.curation_results = self.load_existing_results(results_file)
+        load_time = time.time() - load_start
+        logger.info(f"✅ 已有結果載入完成，耗時: {load_time:.2f}秒")
         
         # 載入Excel
+        logger.info("📊 載入Excel數據...")
+        excel_start = time.time()
         workbook, worksheet = self.load_excel_data()
+        excel_time = time.time() - excel_start
+        logger.info(f"✅ Excel數據載入完成，耗時: {excel_time:.2f}秒")
         
         # 檢查處理模式
         use_filter_mode = self.config.getboolean('processing', 'use_filter_mode', fallback=False)
         
         if use_filter_mode:
             # 過濾模式
+            logger.info("🔍 使用過濾模式...")
             self.processing_metadata['processing_mode'] = "filter_mode"
+            
+            filter_start = time.time()
             rows_to_process = self.get_filtered_rows(worksheet)
+            filter_time = time.time() - filter_start
             
             if not rows_to_process:
-                logger.warning("過濾模式下沒有找到符合條件的行")
+                logger.warning("⚠️ 過濾模式下沒有找到符合條件的行")
                 return results_file
+            
+            logger.info(f"✅ 過濾完成，找到 {len(rows_to_process)} 行，耗時: {filter_time:.2f}秒")
             
             # 獲取過濾結果的評分範圍
             filter_start_index = self.config.getint('filter', 'start_index', fallback=0)
@@ -906,91 +963,191 @@ class BuddhistQACurator:
                 start_idx = max(0, filter_start_index)
                 end_idx = min(len(rows_to_process), filter_end_index + 1)
                 rows_to_process = rows_to_process[start_idx:end_idx]
-                logger.info(f"過濾模式：處理第 {start_idx+1} 到第 {end_idx} 條過濾結果")
+                logger.info(f"🎯 過濾模式：處理第 {start_idx+1} 到第 {end_idx} 條過濾結果，共 {len(rows_to_process)} 條")
             else:
                 # 只處理第一條
                 rows_to_process = rows_to_process[:1]
-                logger.info("過濾模式：只處理第一條過濾結果")
+                logger.info("🎯 過濾模式：只處理第一條過濾結果")
             
         else:
             # 傳統模式（指定行號）
+            logger.info("📝 使用行號模式...")
             self.processing_metadata['processing_mode'] = "row_mode"
-        
-        # 確定處理範圍
-        max_row = worksheet.max_row
-        if end_row is None or end_row > max_row:
-            end_row = max_row
-        
+            
+            # 確定處理範圍
+            max_row = worksheet.max_row
+            if end_row is None or end_row > max_row:
+                end_row = max_row
+            
             rows_to_process = list(range(start_row, end_row + 1))
-            logger.info(f"傳統模式：處理第 {start_row} 到 {end_row} 行，共 {len(rows_to_process)} 條記錄")
+            logger.info(f"🎯 行號模式：處理第 {start_row} 到 {end_row} 行，共 {len(rows_to_process)} 條記錄")
         
-        logger.info(f"結果將保存到: {results_file}")
+        # 開始評分處理
+        total_count = len(rows_to_process)
+        logger.info(f"🚀 開始評分處理，總目標: {total_count} 條記錄")
+        
+        # 顯示進度條
+        self._display_progress_bar(0, total_count, "開始處理")
         
         processed_count = 0
         success_count = 0
+        failed_count = 0
+        skipped_count = 0
         
-        for row in rows_to_process:
+        # 記錄處理開始時間
+        processing_start_time = time.time()
+        last_save_time = processing_start_time
+        
+        for i, row in enumerate(rows_to_process):
+            current_time = time.time()
+            elapsed_time = current_time - processing_start_time
+            
+            # 計算進度和預估時間
+            progress_percent = (i / total_count) * 100 if total_count > 0 else 0
+            if i > 0:
+                avg_time_per_item = elapsed_time / i
+                remaining_items = total_count - i
+                estimated_remaining_time = remaining_items * avg_time_per_item
+                
+                logger.info(f"📈 進度: {i+1}/{total_count} ({progress_percent:.1f}%) - 已耗時: {elapsed_time:.1f}秒")
+                logger.info(f"⏳ 預估剩餘時間: {estimated_remaining_time:.1f}秒 ({estimated_remaining_time/60:.1f}分鐘)")
+                logger.info(f"🚀 平均速度: {i/elapsed_time:.2f} 條/秒")
+            
+            # 更新進度條
+            self._display_progress_bar(i + 1, total_count, f"處理第{i+1}條")
+            
             try:
                 # 檢查是否已處理
                 row_key = str(row)
                 if row_key in self.curation_results:
-                    logger.info(f"第 {row} 行已處理，跳過")
+                    logger.info(f"⏭️ 第 {row} 行已處理，跳過")
+                    skipped_count += 1
                     continue
                 
                 # 提取問答內容
+                logger.info(f"📖 提取第 {row} 行問答內容...")
+                extract_start = time.time()
                 question, answer = self.extract_qa_content(worksheet, row)
+                extract_time = time.time() - extract_start
                 
                 if not question and not answer:
-                    logger.info(f"第 {row} 行無內容，跳過")
+                    logger.info(f"⚠️ 第 {row} 行無內容，跳過")
+                    skipped_count += 1
                     continue
                 
-                logger.info(f"處理第 {row} 行: {question[:50]}...")
+                logger.info(f"🔄 處理第 {row} 行: {question[:100]}...")
+                logger.info(f"📊 內容提取耗時: {extract_time:.2f}秒")
                 
                 # 進行精選評分
+                logger.info(f"🤖 開始AI評分...")
+                scoring_start = time.time()
                 result = self.evaluate_qa_quality(question, answer)
+                scoring_time = time.time() - scoring_start
+                logger.info(f"✅ AI評分完成，耗時: {scoring_time:.2f}秒")
                 
                 # 保存結果
+                logger.info(f"💾 保存評分結果...")
+                save_start = time.time()
                 self.curation_results[row_key] = {
                     'row_number': row,
                     'question': question[:500],  # 限制長度
                     'answer': answer[:1000],     # 限制長度
-                    'breadth_score': result['breadth_score'],
-                    'depth_score': result['depth_score'],
-                    'uniqueness_score': result['uniqueness_score'],
-                    'overall_score': result['overall_score'],
-                    'breadth_comment': result['breadth_comment'],
-                    'depth_comment': result['depth_comment'],
-                    'uniqueness_comment': result['uniqueness_comment'],
-                    'overall_comment': result['overall_comment'],
-                    'question_summary': result['question_summary'],
-                    'answer_summary': result['answer_summary'],
-                    'status': result['status'],
+                    'breadth_score': result.get('breadth_score', ''),
+                    'depth_score': result.get('depth_score', ''),
+                    'uniqueness_score': result.get('uniqueness_score', ''),
+                    'overall_score': result.get('overall_score', ''),
+                    'breadth_comment': result.get('breadth_comment', ''),
+                    'depth_comment': result.get('depth_comment', ''),
+                    'uniqueness_comment': result.get('uniqueness_comment', ''),
+                    'overall_comment': result.get('overall_comment', ''),
+                    'question_summary': result.get('question_summary', ''),
+                    'answer_summary': result.get('answer_summary', ''),
+                    'status': result.get('status', 'success'),  # 使用get方法，默認為success
                     'processed_time': datetime.now().isoformat()
                 }
+                save_time = time.time() - save_start
+                logger.info(f"✅ 結果保存完成，耗時: {save_time:.2f}秒")
                 
                 processed_count += 1
-                if result['status'] == 'success':
+                if result.get('status') == 'success':
                     success_count += 1
                 
-                logger.info(f"第 {row} 行處理完成")
+                # 計算總耗時
+                total_item_time = extract_time + scoring_time + save_time
+                logger.info(f"✅ 第 {row} 行處理完成，總耗時: {total_item_time:.2f}秒")
                 
                 # 每處理10條記錄保存一次
                 if processed_count % 10 == 0:
+                    logger.info(f"💾 執行中間保存...")
+                    save_start = time.time()
                     self.save_results(results_file)
-                    logger.info(f"已處理 {processed_count} 條記錄，中間保存完成")
+                    save_time = time.time() - save_start
+                    last_save_time = time.time()
+                    logger.info(f"✅ 中間保存完成，已處理 {processed_count} 條記錄，保存耗時: {save_time:.2f}秒")
                 
                 # API調用間隔
-                time.sleep(1)
+                if i < total_count - 1:  # 不是最後一條
+                    logger.info(f"⏸️ 等待1秒後處理下一條...")
+                    time.sleep(1)
                 
             except Exception as e:
-                logger.error(f"處理第 {row} 行時發生錯誤: {e}")
+                logger.error(f"❌ 處理第 {row} 行時發生錯誤: {e}")
+                failed_count += 1
+                processed_count += 1
                 continue
         
         # 最終保存
+        logger.info(f"💾 執行最終保存...")
+        final_save_start = time.time()
         self.save_results(results_file)
+        final_save_time = time.time() - final_save_start
         
-        logger.info(f"批量處理完成！總共處理 {processed_count} 條記錄，成功 {success_count} 條")
+        # 計算總統計
+        total_time = time.time() - overall_start_time
+        processing_time = time.time() - processing_start_time
+        
+        logger.info(f"🎉 批量處理完成！")
+        logger.info(f"📊 統計結果:")
+        logger.info(f"   - 總計: {total_count} 條")
+        logger.info(f"   - 成功: {success_count} 條")
+        logger.info(f"   - 失敗: {failed_count} 條")
+        logger.info(f"   - 跳過: {skipped_count} 條")
+        logger.info(f"⏱️ 時間統計:")
+        logger.info(f"   - 總耗時: {total_time:.2f}秒 ({total_time/60:.1f}分鐘)")
+        logger.info(f"   - 處理耗時: {processing_time:.2f}秒 ({processing_time/60:.1f}分鐘)")
+        logger.info(f"   - 最終保存耗時: {final_save_time:.2f}秒")
+        if processed_count > 0:
+            logger.info(f"🚀 性能統計:")
+            logger.info(f"   - 平均速度: {processed_count/processing_time:.2f} 條/秒")
+            logger.info(f"   - 平均每條耗時: {processing_time/processed_count:.2f} 秒")
+        
         return results_file
+
+    def _display_progress_bar(self, current: int, total: int, status: str = ""):
+        """顯示進度條"""
+        try:
+            if total <= 0:
+                return
+            
+            # 計算進度百分比
+            progress = (current / total) * 100
+            
+            # 進度條長度
+            bar_length = 30
+            filled_length = int(bar_length * current // total)
+            
+            # 構建進度條
+            bar = '█' * filled_length + '░' * (bar_length - filled_length)
+            
+            # 顯示進度條
+            print(f"\r📊 進度: [{bar}] {current}/{total} ({progress:.1f}%) - {status}", end='', flush=True)
+            
+            # 如果完成，換行
+            if current >= total:
+                print()
+                
+        except Exception as e:
+            logger.warning(f"進度條顯示失敗: {e}")
 
 def main():
     """主函數"""
