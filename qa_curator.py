@@ -19,6 +19,16 @@ import json
 import argparse
 from typing import Dict, List, Tuple, Optional, Union, Any
 
+# 導入緩存系統
+try:
+    from filter_cache import FilterCache
+    FILTER_CACHE_AVAILABLE = True
+except ImportError:
+    FILTER_CACHE_AVAILABLE = False
+    logger = logging.getLogger("qa_curator")
+    if logger:
+        logger.warning("緩存系統不可用，將使用傳統掃描模式")
+
 # 設置日誌函數
 def setup_logging():
     """設置日誌配置"""
@@ -79,6 +89,15 @@ class BuddhistQACurator:
         
         # 載入prompt模板
         self.prompt_template = self.load_prompt_template()
+        
+        # 初始化緩存系統
+        if FILTER_CACHE_AVAILABLE:
+            cache_dir = self.config.get('filter', 'cache_dir', fallback='.filter_cache')
+            self.filter_cache = FilterCache(cache_dir)
+            logger.info(f"緩存系統初始化完成，緩存目錄: {cache_dir}")
+        else:
+            self.filter_cache = None
+            logger.warning("緩存系統不可用，將使用傳統掃描模式")
         
         # 結果存儲
         self.curation_results = {}
@@ -691,6 +710,20 @@ class BuddhistQACurator:
         try:
             logger.info("開始快速列值過濾（從Column H開始）...")
             
+            # 檢查緩存
+            if self.filter_cache:
+                excel_file = self.config.get('excel', 'file_path')
+                f_value = conditions.get('column_f_value', '')
+                g_value = conditions.get('column_g_value', '')
+                h_value = conditions.get('column_h_value', '')
+                
+                cached_rows = self.filter_cache.get_cached_result(excel_file, f_value, g_value, h_value)
+                if cached_rows:
+                    logger.info(f"緩存命中！直接返回 {len(cached_rows)} 行過濾結果")
+                    return cached_rows
+                else:
+                    logger.info("緩存未命中，開始掃描Excel文件")
+            
             # 記錄使用的過濾條件
             used_conditions = []
             if 'column_f_value' in conditions:
@@ -727,18 +760,36 @@ class BuddhistQACurator:
             
             # 從第7行開始掃描（跳過標題行和說明行）
             scan_start = 7
-            scan_end = min(max_row, 1000)  # 限制掃描範圍
+            
+            # 根據配置決定掃描範圍
+            scan_full_file = self.config.getboolean('filter', 'scan_full_file', fallback=True)
+            if scan_full_file:
+                scan_end = max_row  # 掃描完整文件以建立完整緩存
+                logger.info("🔍 掃描策略: 完整文件掃描（建立完整緩存）")
+            else:
+                scan_end = min(max_row, 1000)  # 限制掃描範圍以控制性能
+                logger.info("⚠️ 掃描策略: 限制掃描範圍（緩存不完整，不推薦）")
             
             logger.info(f"掃描範圍: 第{scan_start}行到第{scan_end}行")
             logger.info(f"預計掃描行數: {scan_end - scan_start + 1}")
             
-            # 計算預期的進度更新點
+            # 計算預期的進度更新點（根據文件大小動態調整）
             expected_progress_points = []
-            for i in range(50, scan_end + 1, 50):
+            if scan_end - scan_start > 1000:
+                # 大文件：每500行更新一次
+                step = 500
+            elif scan_end - scan_start > 500:
+                # 中等文件：每200行更新一次
+                step = 200
+            else:
+                # 小文件：每100行更新一次
+                step = 100
+            
+            for i in range(step, scan_end + 1, step):
                 if i >= scan_start:
                     expected_progress_points.append(i)
             
-            logger.info(f"預期進度更新點: {expected_progress_points[:10]}{'...' if len(expected_progress_points) > 10 else ''}")
+            logger.info(f"進度更新頻率: 每{step}行，預期進度更新點: {expected_progress_points[:10]}{'...' if len(expected_progress_points) > 10 else ''}")
             
             # 記錄開始時間
             import time
@@ -794,40 +845,49 @@ class BuddhistQACurator:
                         filtered_rows.append(row)
                         logger.debug(f"第{row}行通過所有列值過濾")
                         
-                        # 檢查是否已達到目標數量
-                        if len(filtered_rows) >= required_count:
-                            logger.info(f"已找到足夠的過濾結果: {len(filtered_rows)}條，目標: {required_count}條，提前停止掃描")
-                            break
+                        # 檢查是否已達到目標數量（僅用於日誌，不停止掃描）
+                        if len(filtered_rows) >= required_count and not score_all_filtered:
+                            logger.info(f"已找到足夠的過濾結果: {len(filtered_rows)}條，目標: {required_count}條，繼續掃描以建立完整緩存")
                     
-                    # 進度更新：每50行更新一次，確保進度可見性
-                    if row % 50 == 0:
+                    # 進度更新：根據文件大小動態調整更新頻率
+                    if scan_end - scan_start > 1000:
+                        # 大文件：每500行更新一次
+                        progress_step = 500
+                    elif scan_end - scan_start > 500:
+                        # 中等文件：每200行更新一次
+                        progress_step = 200
+                    else:
+                        # 小文件：每100行更新一次
+                        progress_step = 100
+                    
+                    if row % progress_step == 0:
                         current_time = time.time()
                         elapsed_time = current_time - start_time
                         rows_per_second = row / elapsed_time if elapsed_time > 0 else 0
-                        target_info = "全部" if required_count == float('inf') else f"目標 {required_count} 行"
+                        target_info = "全部" if required_count == float('inf') else f"目標 {required_count} 行（完整掃描建立緩存）"
                         logger.info(f"快速過濾進度: 已掃描到第 {row} 行，當前找到 {len(filtered_rows)} 行匹配，{target_info}，耗時 {elapsed_time:.1f}秒，速度 {rows_per_second:.1f}行/秒")
                         last_progress_time = current_time
                     
-                    # 每100行也更新一次（作為主要進度點）
+                    # 每100行也更新一次（作為主要進度點，適用於所有文件大小）
                     if row % 100 == 0:
                         current_time = time.time()
                         elapsed_time = current_time - start_time
                         rows_per_second = row / elapsed_time if elapsed_time > 0 else 0
-                        target_info = "全部" if required_count == float('inf') else f"目標 {required_count} 行"
+                        target_info = "全部" if required_count == float('inf') else f"目標 {required_count} 行（完整掃描建立緩存）"
                         logger.info(f"快速過濾主要進度: 已掃描到第 {row} 行，當前找到 {len(filtered_rows)} 行匹配，{target_info}，耗時 {elapsed_time:.1f}秒，速度 {rows_per_second:.1f}行/秒")
                     
-                    # 每200行更新一次（作為大進度點）
-                    if row % 200 == 0:
+                    # 每500行更新一次（作為大進度點，適用於大文件）
+                    if row % 500 == 0:
                         current_time = time.time()
                         elapsed_time = current_time - start_time
                         rows_per_second = row / elapsed_time if elapsed_time > 0 else 0
-                        target_info = "全部" if required_count == float('inf') else f"目標 {required_count} 行"
+                        target_info = "全部" if required_count == float('inf') else f"目標 {required_count} 行（完整掃描建立緩存）"
                         logger.info(f"快速過濾大進度: 已掃描到第 {row} 行，當前找到 {len(filtered_rows)} 行匹配，{target_info}，耗時 {elapsed_time:.1f}秒，速度 {rows_per_second:.1f}行/秒")
                     
                     # 如果超過5秒沒有進度更新，強制輸出一次
                     current_time = time.time()
                     if current_time - last_progress_time > 5:
-                        target_info = "全部" if required_count == float('inf') else f"目標 {required_count} 行"
+                        target_info = "全部" if required_count == float('inf') else f"目標 {required_count} 行（完整掃描建立緩存）"
                         logger.info(f"強制進度更新: 已掃描到第 {row} 行，當前找到 {len(filtered_rows)} 行匹配，{target_info}，耗時 {current_time - start_time:.1f}秒")
                         last_progress_time = current_time
                 
@@ -842,17 +902,36 @@ class BuddhistQACurator:
                 logger.info(f"掃描統計: 從第{scan_start}行到第{scan_end}行，共掃描{scan_end - scan_start + 1}行")
             elif len(filtered_rows) >= required_count:
                 logger.info(f"快速列值過濾完成，已找到足夠的結果: {len(filtered_rows)}條，目標: {required_count}條")
-                logger.info(f"掃描統計: 從第{scan_start}行到第{row}行，共掃描{total_scanned}行，提前停止")
+                logger.info(f"掃描統計: 從第{scan_start}行到第{scan_end}行，共掃描{scan_end - scan_start + 1}行（完整掃描以建立緩存）")
             else:
                 logger.info(f"快速列值過濾完成，找到 {len(filtered_rows)} 行匹配，目標: {required_count}行")
                 logger.info(f"掃描統計: 從第{scan_start}行到第{scan_end}行，共掃描{scan_end - scan_start + 1}行")
             
-            # 記錄過濾效率統計
+            # 計算過濾效率統計
             if score_all_filtered:
                 # 全部評分模式，使用完整掃描範圍
                 total_scanned = scan_end - scan_start + 1
             efficiency = (len(filtered_rows) / total_scanned) * 100 if total_scanned > 0 else 0
             logger.info(f"過濾效率: {efficiency:.2f}% ({len(filtered_rows)}/{total_scanned})")
+            
+            # 保存緩存結果
+            if self.filter_cache and filtered_rows:
+                excel_file = self.config.get('excel', 'file_path')
+                f_value = conditions.get('column_f_value', '')
+                g_value = conditions.get('column_g_value', '')
+                h_value = conditions.get('column_h_value', '')
+                
+                # 準備掃描統計信息
+                scan_stats = {
+                    'scan_start': scan_start,
+                    'scan_end': row if 'row' in locals() else scan_end,
+                    'total_scanned': total_scanned,
+                    'efficiency': efficiency,
+                    'scan_time': time.time() - start_time if 'start_time' in locals() else 0
+                }
+                
+                self.filter_cache.save_filter_result(excel_file, f_value, g_value, h_value, filtered_rows, scan_stats)
+                logger.info(f"緩存已保存，共 {len(filtered_rows)} 行結果")
             
             return filtered_rows
             
@@ -875,7 +954,15 @@ class BuddhistQACurator:
             
             # 從第7行開始掃描（跳過標題行和說明行）
             scan_start = 7
-            scan_end = min(max_row, 1000)  # 限制掃描範圍，避免過度掃描
+            
+            # 根據配置決定掃描範圍
+            scan_full_file = self.config.getboolean('filter', 'scan_full_file', fallback=True)
+            if scan_full_file:
+                scan_end = max_row  # 掃描完整文件以建立完整緩存
+                logger.info("🔍 掃描策略: 完整文件掃描（建立完整緩存）")
+            else:
+                scan_end = min(max_row, 1000)  # 限制掃描範圍以控制性能
+                logger.info("⚠️ 掃描策略: 限制掃描範圍（緩存不完整，不推薦）")
             
             logger.info(f"掃描範圍: 第{scan_start}行到第{scan_end}行")
             

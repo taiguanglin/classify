@@ -5,3 +5,6 @@ __pycache__
 ~$*.xlsx
 *.csv
 *.xlsx
+
+.demo_cache
+.test_cache
