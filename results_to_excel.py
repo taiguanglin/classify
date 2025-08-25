@@ -58,7 +58,7 @@ class CurationResultsWriter:
             raise
     
     def create_output_excel(self, source_file: str, output_file: str, required_rows: set = None) -> tuple:
-        """創建輸出Excel文件，只包含需要的行"""
+        """創建輸出Excel文件，根據配置選擇輸出模式"""
         try:
             print("📁 正在載入Excel文件...")
             
@@ -68,22 +68,28 @@ class CurationResultsWriter:
             source_worksheet = source_workbook[sheet_name]
             
             print("✅ Excel文件載入完成")
-            print("🧹 正在創建精簡工作表...")
             
-            # 創建新的工作簿，只包含需要的行
-            workbook, worksheet = self._create_minimal_excel(source_worksheet, required_rows)
+            # 檢查輸出模式
+            output_mode = self.config.get('excel_output', 'output_mode', fallback='compact')
+            
+            if output_mode == 'compact':
+                print("🧹 正在創建精簡工作表...")
+                workbook, worksheet = self._create_compact_excel(source_workbook, source_worksheet, required_rows)
+            else:
+                print("📋 正在準備完整工作表...")
+                workbook, worksheet = self._create_full_excel(source_workbook, source_worksheet)
             
             # 清理工作表，只保留指定的工作表
             self._clean_worksheets(workbook, sheet_name)
             
-            logger.info(f"成功創建精簡Excel文件，包含 {len(required_rows) + 1 if required_rows else 0} 行")
+            logger.info(f"成功創建Excel文件，輸出模式: {output_mode}")
             return workbook, worksheet
         except Exception as e:
             logger.error(f"創建輸出Excel失敗: {e}")
             raise
-    
-    def _create_minimal_excel(self, source_worksheet, required_rows: set):
-        """創建只包含需要行的新Excel工作簿"""
+
+    def _create_compact_excel(self, source_workbook, source_worksheet, required_rows: set):
+        """創建精簡Excel工作簿，只包含需要的行"""
         from openpyxl import Workbook
         
         # 創建新工作簿
@@ -139,6 +145,19 @@ class CurationResultsWriter:
                 logger.warning(f"復制第 {original_row} 行時出錯: {e}")
         
         logger.info(f"成功創建精簡工作表，從 {len(rows_to_copy)} 行復制")
+        return workbook, worksheet
+
+    def _create_full_excel(self, source_workbook, source_worksheet):
+        """創建完整Excel工作簿，保持原有結構"""
+        # 直接返回源工作簿的副本
+        workbook = source_workbook
+        worksheet = source_worksheet
+        
+        # 在完整模式下，行號映射就是原行號
+        self.row_mapping = {}
+        self.title_row_new = 6  # 標題行通常是第6行
+        
+        logger.info("成功準備完整工作表，保持原有結構")
         return workbook, worksheet
     
     def _clean_worksheets(self, workbook, keep_sheet_name: str):
@@ -334,14 +353,23 @@ class CurationResultsWriter:
         # 獲取需要的行號
         required_rows = set(int(row_key) for row_key in results.keys())
         
-        workbook, worksheet = self.create_output_excel(source_file, output_file, required_rows)
+        # 檢查輸出模式
+        output_mode = self.config.get('excel_output', 'output_mode', fallback='compact')
+        
+        if output_mode == 'compact':
+            # 精簡模式：只包含需要的行
+            workbook, worksheet = self.create_output_excel(source_file, output_file, required_rows)
+        else:
+            # 完整模式：保持原有結構
+            workbook, worksheet = self.create_output_excel(source_file, output_file)
         
         # 添加新列的標題
         self._add_column_headers(worksheet)
         
         total_items = len(results)
-        logger.info(f"開始寫入 {total_items} 條精選評分結果")
+        logger.info(f"開始寫入 {total_items} 條精選評分結果，輸出模式: {output_mode}")
         print(f"📊 開始處理 {total_items} 條精選評分結果...")
+        print(f"🔧 輸出模式: {output_mode}")
         
         # 統計信息
         success_count = 0
@@ -401,13 +429,19 @@ class CurationResultsWriter:
         
         print(f"✅ 數據寫入完成: 成功 {success_count} 條，失敗 {failed_count} 條")
         
-        # 自動調整列寬和行高
-        print("📏 正在調整列寬...")
-        self._auto_adjust_columns_and_rows(worksheet)
-        
-        # 由於已經只輸出需要的行，不再需要隱藏行
-        print("👁️ 輸出文件已經只包含需要的行，無需隱藏行...")
-        logger.info("輸出文件已經只包含需要的行，無需隱藏行")
+        # 根據輸出模式進行不同的後處理
+        if output_mode == 'compact':
+            # 精簡模式：自動調整列寬和行高
+            print("📏 正在調整列寬...")
+            self._auto_adjust_columns_and_rows(worksheet)
+            print("👁️ 輸出文件已經只包含需要的行，無需隱藏行...")
+            logger.info("精簡模式：輸出文件已經只包含需要的行，無需隱藏行")
+        else:
+            # 完整模式：保持原有結構，只調整評分相關列
+            print("📏 正在調整評分相關列寬...")
+            self._adjust_scoring_columns_only(worksheet)
+            print("📋 完整模式：保持原有Excel結構，只修改評分相關列...")
+            logger.info("完整模式：保持原有Excel結構，只修改評分相關列")
         
         # 保存Excel文件
         print("💾 正在保存Excel文件...")
@@ -416,6 +450,7 @@ class CurationResultsWriter:
             print("✅ Excel文件保存完成!")
             logger.info(f"✅ Excel文件已保存: {output_file}")
             logger.info(f"📊 統計: 成功寫入 {success_count} 條，失敗 {failed_count} 條")
+            logger.info(f"🔧 輸出模式: {output_mode}")
             
             # 顯示元數據信息
             if metadata:
@@ -424,6 +459,7 @@ class CurationResultsWriter:
                 logger.info(f"   處理時間: {metadata.get('processing_start_time', 'N/A')} - {metadata.get('processing_end_time', 'N/A')}")
                 logger.info(f"   總處理: {metadata.get('total_processed', 0)}")
                 logger.info(f"   成功率: {metadata.get('total_success', 0)}/{metadata.get('total_processed', 0)}")
+                logger.info(f"   處理模式: {metadata.get('processing_mode', 'N/A')}")
             
             return output_file
             
@@ -520,6 +556,43 @@ class CurationResultsWriter:
             else:  # 英文字符
                 width += 1
         return width
+
+    def _adjust_scoring_columns_only(self, worksheet):
+        """只調整評分相關列的寬度（完整模式）"""
+        try:
+            # 獲取輸出列配置
+            breadth_score_col = self.config.getint('output', 'breadth_score_column', fallback=24)
+            depth_score_col = self.config.getint('output', 'depth_score_column', fallback=25)
+            overall_score_col = self.config.getint('output', 'overall_score_column', fallback=26)
+            breadth_comment_col = self.config.getint('output', 'breadth_comment_column', fallback=27)
+            depth_comment_col = self.config.getint('output', 'depth_comment_column', fallback=28)
+            overall_comment_col = self.config.getint('output', 'overall_comment_column', fallback=29)
+            
+            # 只調整評分相關列
+            scoring_columns = [
+                {'col': breadth_score_col, 'min_width': 10, 'max_width': 15, 'name': '廣度評分'},
+                {'col': depth_score_col, 'min_width': 10, 'max_width': 15, 'name': '深度評分'},
+                {'col': overall_score_col, 'min_width': 10, 'max_width': 15, 'name': '綜合評分'},
+                {'col': breadth_comment_col, 'min_width': 20, 'max_width': 50, 'name': '廣度評論'},
+                {'col': depth_comment_col, 'min_width': 20, 'max_width': 50, 'name': '深度評論'},
+                {'col': overall_comment_col, 'min_width': 20, 'max_width': 50, 'name': '總體評價'},
+            ]
+            
+            # 調整評分相關列的寬度
+            for col_config in scoring_columns:
+                self._adjust_column_width(
+                    worksheet, 
+                    col_config['col'], 
+                    col_config['max_width'], 
+                    col_config['min_width'],
+                    col_config['name']
+                )
+            
+            logger.info("評分相關列寬度調整完成")
+            
+        except Exception as e:
+            logger.error(f"調整評分相關列寬度失敗: {e}")
+            # 不拋出異常，讓程序繼續執行
 
 def main():
     """主函數"""

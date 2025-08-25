@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 佛學問答精選器測試腳本
-用於測試精選器系統的基本功能
+用於測試精選器系統的基本功能，包括新的過濾模式
 """
 
 import os
@@ -47,7 +47,7 @@ def test_config_file():
         config.read('config.ini', encoding='utf-8')
         
         # 檢查必要的配置項
-        required_sections = ['excel', 'output', 'processing']
+        required_sections = ['excel', 'output', 'processing', 'filter']
         missing_sections = []
         
         for section in required_sections:
@@ -71,6 +71,17 @@ def test_config_file():
         
         if missing_configs:
             print(f"❌ 配置文件缺少輸出列配置: {', '.join(missing_configs)}")
+            return False
+        
+        # 檢查過濾模式配置
+        filter_configs = ['start_index', 'end_index']
+        missing_filter_configs = []
+        for config_name in filter_configs:
+            if not config.has_option('filter', config_name):
+                missing_filter_configs.append(config_name)
+        
+        if missing_filter_configs:
+            print(f"❌ 配置文件缺少過濾模式配置: {', '.join(missing_filter_configs)}")
             return False
         
         print("✅ 配置文件檢查通過")
@@ -118,7 +129,8 @@ def test_curator_class():
         
         # 檢查必要的方法
         required_methods = [
-            'evaluate_qa_quality', 'parse_evaluation_result', 'process_batch'
+            'evaluate_qa_quality', 'parse_evaluation_result', 'process_batch',
+            'get_filtered_rows', '_get_filter_conditions', '_fast_column_filter', '_traditional_scan_filter'
         ]
         
         missing_methods = []
@@ -195,10 +207,89 @@ def test_sample_prompt():
         print(f"❌ 提示詞格式化測試失敗: {e}")
         return False
 
+def test_filter_mode_config():
+    """測試過濾模式配置"""
+    print("🧪 測試過濾模式配置...")
+    
+    try:
+        import configparser
+        config = configparser.ConfigParser()
+        config.read('config.ini', encoding='utf-8')
+        
+        # 檢查過濾模式配置
+        if not config.has_section('filter'):
+            print("❌ 配置文件缺少filter章節")
+            return False
+        
+        # 檢查必要的過濾配置
+        required_filter_configs = ['start_index', 'end_index']
+        missing_configs = []
+        
+        for config_name in required_filter_configs:
+            if not config.has_option('filter', config_name):
+                missing_configs.append(config_name)
+        
+        if missing_configs:
+            print(f"❌ 過濾模式配置缺少: {', '.join(missing_configs)}")
+            return False
+        
+        # 檢查列值過濾配置
+        column_filter_configs = ['column_f_value', 'column_g_value', 'column_h_value']
+        for config_name in column_filter_configs:
+            if not config.has_option('filter', config_name):
+                print(f"❌ 列值過濾配置缺少: {config_name}")
+                return False
+        
+        print("✅ 過濾模式配置檢查通過")
+        return True
+        
+    except Exception as e:
+        print(f"❌ 過濾模式配置檢查失敗: {e}")
+        return False
+
+def test_excel_output_config():
+    """測試Excel輸出模式配置"""
+    print("🧪 測試Excel輸出模式配置...")
+    
+    try:
+        import configparser
+        config = configparser.ConfigParser()
+        config.read('config.ini', encoding='utf-8')
+        
+        # 檢查Excel輸出模式配置
+        if not config.has_section('excel_output'):
+            print("❌ 配置文件缺少excel_output章節")
+            return False
+        
+        # 檢查必要的輸出模式配置
+        required_output_configs = ['output_mode']
+        missing_configs = []
+        
+        for config_name in required_output_configs:
+            if not config.has_option('excel_output', config_name):
+                missing_configs.append(config_name)
+        
+        if missing_configs:
+            print(f"❌ Excel輸出模式配置缺少: {', '.join(missing_configs)}")
+            return False
+        
+        # 檢查輸出模式值
+        output_mode = config.get('excel_output', 'output_mode')
+        if output_mode not in ['compact', 'full']:
+            print(f"❌ 無效的輸出模式: {output_mode}，應該是 'compact' 或 'full'")
+            return False
+        
+        print("✅ Excel輸出模式配置檢查通過")
+        return True
+        
+    except Exception as e:
+        print(f"❌ Excel輸出模式配置檢查失敗: {e}")
+        return False
+
 def main():
     """主測試函數"""
-    print("🚀 佛學問答精選器系統測試")
-    print("=" * 50)
+    print("🚀 佛學問答精選器系統測試（含列值過濾和雙輸出模式）")
+    print("=" * 70)
     
     tests = [
         test_python_modules,
@@ -206,7 +297,9 @@ def main():
         test_prompt_template,
         test_curator_class,
         test_excel_writer,
-        test_sample_prompt
+        test_sample_prompt,
+        test_filter_mode_config,
+        test_excel_output_config
     ]
     
     passed = 0
@@ -219,7 +312,7 @@ def main():
         except Exception as e:
             print(f"❌ 測試執行失敗: {e}")
     
-    print("\n" + "=" * 50)
+    print("\n" + "=" * 70)
     print(f"📊 測試結果: {passed}/{total} 通過")
     
     if passed == total:
@@ -228,6 +321,11 @@ def main():
         print("1. 設置API Key或啟動ChatMock服務器")
         print("2. 運行: python3 qa_curator.py --api-type chatmock")
         print("3. 將結果寫入Excel: python3 results_to_excel.py results_file.json")
+        print("\n💡 新功能說明：")
+        print("- 支持兩種評分模式：指定行號模式和過濾結果模式")
+        print("- 過濾模式可通過Excel列F、G、H的值進行篩選")
+        print("- 支持兩種Excel輸出模式：精簡模式和完整模式")
+        print("- 可設定評分過濾結果的範圍（如只評分前3條）")
     else:
         print("⚠️  部分測試失敗，請檢查上述錯誤信息。")
         return 1

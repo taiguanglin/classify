@@ -2,7 +2,7 @@
 # -*- coding: utf-8 -*-
 """
 佛學問答精選器使用示例
-展示如何使用精選器系統進行問答評分
+展示如何使用精選器系統進行問答評分，包括新的過濾模式
 """
 
 import json
@@ -19,6 +19,7 @@ def create_sample_results():
             "sheet_name": "答疑汇总",
             "llm_model": "chat-gpt-5",
             "processing_start_time": datetime.now().isoformat(),
+            "processing_mode": "filter_mode",
             "total_processed": 2,
             "total_success": 2,
             "total_failed": 0
@@ -68,22 +69,24 @@ def create_sample_results():
 def show_usage_instructions():
     """顯示使用說明"""
     print("\n📖 佛學問答精選器使用說明")
-    print("=" * 50)
+    print("=" * 70)
     
     print("\n🎯 系統功能：")
     print("- 對佛學問答進行廣度和深度評分（0-100分）")
     print("- 自動計算綜合評分")
     print("- 提供詳細的評分評論")
     print("- 生成問題和回答摘要")
+    print("- 支持兩種評分模式：指定行號模式和過濾結果模式")
+    print("- 支持兩種Excel輸出模式：精簡模式和完整模式")
     print("- 支持批量處理Excel文件")
     
     print("\n🚀 快速開始：")
     print("1. 使用ChatMock（推薦）：")
-    print("   python3 qa_curator_v2.py --api-type chatmock")
+    print("   python3 qa_curator.py --api-type chatmock")
     print("")
     print("2. 使用OpenAI API：")
     print("   export OPENAI_API_KEY=YOUR_API_KEY")
-    print("   python3 qa_curator_v2.py --api-type openai")
+    print("   python3 qa_curator.py --api-type openai")
     print("")
     print("3. 將結果寫入Excel：")
     print("   python3 results_to_excel.py results_file.json")
@@ -91,7 +94,42 @@ def show_usage_instructions():
     print("\n⚙️  配置說明：")
     print("- 編輯 config.ini 調整Excel文件路徑和列位置")
     print("- 編輯 prompt_template.txt 調整評分標準")
-    print("- 設置 start_row 和 end_row 控制處理範圍")
+    print("- 設置 use_filter_mode 選擇評分模式")
+    print("- 傳統模式：設置 start_row 和 end_row 控制處理範圍")
+    print("- 過濾模式：設置過濾條件和評分範圍")
+    print("- Excel輸出：設置 output_mode 選擇輸出模式")
+    
+    print("\n🔍 評分模式詳解：")
+    print("\n📋 模式1：指定行號模式（use_filter_mode = false）")
+    print("- 直接指定Excel行號範圍進行評分")
+    print("- 適用於：知道具體行號的情況")
+    print("- 配置：start_row, end_row")
+    
+    print("\n🔍 模式2：過濾結果模式（use_filter_mode = true）")
+    print("- 根據過濾條件篩選問答，然後對篩選結果進行評分")
+    print("- 適用於：需要根據內容條件篩選的情況")
+    print("- 過濾條件：列值、關鍵詞、行號範圍等")
+    print("- 評分範圍：可設定評分前幾條過濾結果")
+    print("- 配置：filter章節的各種過濾條件")
+    
+    print("\n🔧 過濾條件類型：")
+    print("\n1. 列值過濾（基於Excel列F、G、H的值）")
+    print("   column_f_value: 第F列（第6列）必須匹配的值")
+    print("   column_g_value: 第G列（第7列）必須匹配的值")
+    print("   column_h_value: 第H列（第8列）必須匹配的值")
+    print("   例如：column_f_value = I级, column_g_value = 禪修")
+    print("   注意：至少需要設置一個列值作為過濾條件")
+    
+    print("\n📊 Excel輸出模式：")
+    print("\n📋 模式1：精簡模式（output_mode = compact）")
+    print("- 只生成包含JSON條目的Excel文件")
+    print("- 適用於：只需要評分結果的情況")
+    print("- 特點：文件小、加載快、結構清晰")
+    
+    print("\n📋 模式2：完整模式（output_mode = full）")
+    print("- 輸出完整Excel文件，包含JSON條目的修改")
+    print("- 適用於：需要保持原有Excel結構的情況")
+    print("- 特點：保持原有格式、包含所有數據")
     
     print("\n📊 輸出格式：")
     print("- 廣度評分：反映回答涉及的佛學領域範圍")
@@ -107,11 +145,42 @@ def show_usage_instructions():
     print("- 評選重點放在回答內容的質量上")
     print("- 問題主要用於理解背景和上下文")
     print("- 摘要以comment形式附加到問題和答案單元格上")
+    
+    print("\n🔧 配置示例：")
+    print("\n# 列值過濾模式")
+    print("[processing]")
+    print("use_filter_mode = true")
+    print("")
+    print("[filter]")
+    print("column_f_value = I级")
+    print("column_g_value = 禪修")
+    print("column_h_value = 初級")
+    print("start_index = 0")
+    print("end_index = 2")
+    
+    print("\n# Excel輸出模式")
+    print("[excel_output]")
+    print("output_mode = full  # 或 compact")
+    
+    print("\n# 只評分第一條過濾結果（預設）")
+    print("[filter]")
+    print("start_index = 0")
+    print("end_index = 0")
+    
+    print("\n# 評分前3條過濾結果")
+    print("[filter]")
+    print("start_index = 0")
+    print("end_index = 2")
+    
+    print("\n# 評分第2-4條過濾結果")
+    print("[filter]")
+    print("start_index = 1")
+    print("end_index = 3")
 
 def main():
     """主函數"""
-    print("🚀 佛學問答精選器使用示例")
-    print("=" * 50)
+    print("🚀 佛學問答精選器使用示例（含過濾模式）")
+    print("=" * 60)
     
     # 創建示例結果
     sample_file = create_sample_results()

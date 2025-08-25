@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 """
-佛學問答精選器 v2.0 - 輸出到JSON文件版本
-將精選評分處理與Excel寫入分離，提高效能和容錯性
+佛學問答精選器 - 專門用於評選高質量的佛學問答
+支持兩種評分模式：指定行號模式和過濾結果模式
 """
 
 import configparser
@@ -17,7 +17,7 @@ from datetime import datetime
 import os
 import json
 import argparse
-from typing import Dict, List, Tuple, Optional
+from typing import Dict, List, Tuple, Optional, Union
 
 # 設置日誌函數
 def setup_logging():
@@ -89,7 +89,8 @@ class BuddhistQACurator:
             "processing_start_time": datetime.now().isoformat(),
             "total_processed": 0,
             "total_success": 0,
-            "total_failed": 0
+            "total_failed": 0,
+            "processing_mode": "unknown"
         }
         
         logger.info("佛學問答精選器初始化完成")
@@ -381,41 +382,149 @@ class BuddhistQACurator:
                 'status': 'api_error'
             }
 
-    def parse_evaluation_result(self, result_text: str) -> Dict[str, str]:
-        """解析質量評估結果"""
+    def parse_evaluation_result(self, result_text: str) -> Dict:
+        """解析LLM的評分結果"""
         try:
-            # 使用正則表達式提取各部分
-            breadth_score_match = re.search(r'✅ \*\*廣度評分：\*\* (\d+)分', result_text)
-            depth_score_match = re.search(r'✅ \*\*深度評分：\*\* (\d+)分', result_text)
-            overall_score_match = re.search(r'✅ \*\*綜合評分：\*\* (\d+)分', result_text)
+            logger.info("開始解析LLM評分結果...")
+            logger.debug(f"原始結果文本長度: {len(result_text)}")
+            logger.debug(f"原始結果文本前500字符: {result_text[:500]}")
             
-            breadth_comment_match = re.search(r'✅ \*\*廣度評論：\*\*\s*\n(.+?)(?=\n\n|✅|$)', result_text, re.DOTALL)
-            depth_comment_match = re.search(r'✅ \*\*深度評論：\*\*\s*\n(.+?)(?=\n\n|✅|$)', result_text, re.DOTALL)
-            overall_comment_match = re.search(r'✅ \*\*總體評價：\*\*\s*\n(.+?)(?=\n\n|✅|$)', result_text, re.DOTALL)
-            question_summary_match = re.search(r'✅ \*\*問題摘要：\*\*\s*\n(.+?)(?=\n\n|✅|$)', result_text, re.DOTALL)
-            answer_summary_match = re.search(r'✅ \*\*回答摘要：\*\*\s*\n(.+?)(?=\n\n|✅|$)', result_text, re.DOTALL)
-            
-            return {
-                'breadth_score': breadth_score_match.group(1) if breadth_score_match else '解析失敗',
-                'depth_score': depth_score_match.group(1) if depth_score_match else '解析失敗',
-                'overall_score': overall_score_match.group(1) if overall_score_match else '解析失敗',
-                'breadth_comment': breadth_comment_match.group(1).strip() if breadth_comment_match else '解析失敗',
-                'depth_comment': depth_comment_match.group(1).strip() if depth_comment_match else '解析失敗',
-                'overall_comment': overall_comment_match.group(1).strip() if overall_comment_match else '解析失敗',
-                'question_summary': question_summary_match.group(1).strip() if question_summary_match else '解析失敗',
-                'answer_summary': answer_summary_match.group(1).strip() if answer_summary_match else '解析失敗'
+            # 初始化結果字典
+            parsed_result = {
+                'breadth_score': '解析失敗',
+                'depth_score': '解析失敗', 
+                'overall_score': '解析失敗',
+                'breadth_comment': '解析失敗',
+                'depth_comment': '解析失敗',
+                'overall_comment': '解析失敗',
+                'question_summary': '解析失敗',
+                'answer_summary': '解析失敗'
             }
+            
+            # 改進的正則表達式，匹配LLM的實際輸出格式（支持多種格式）
+            patterns = {
+                'breadth_score': [
+                    r'✅ \*\*廣度評分：\*\* (\d+)分',  # 繁體中文，有**標記
+                    r'✅ 廣度評分：(\d+)分',           # 繁體中文，無**標記
+                    r'✅ \*\*广度评分：\*\* (\d+)分',  # 簡體中文，有**標記
+                    r'✅ 广度评分：(\d+)分'            # 簡體中文，無**標記
+                ],
+                'depth_score': [
+                    r'✅ \*\*深度評分：\*\* (\d+)分',  # 繁體中文，有**標記
+                    r'✅ 深度評分：(\d+)分',           # 繁體中文，無**標記
+                    r'✅ \*\*深度评分：\*\* (\d+)分',  # 簡體中文，有**標記
+                    r'✅ 深度评分：(\d+)分'            # 簡體中文，無**標記
+                ],
+                'overall_score': [
+                    r'✅ \*\*綜合評分：\*\* (\d+)分',  # 繁體中文，有**標記
+                    r'✅ 綜合評分：(\d+)分',           # 繁體中文，無**標記
+                    r'✅ \*\*综合评分：\*\* (\d+)分',  # 簡體中文，有**標記
+                    r'✅ 综合评分：(\d+)分'            # 簡體中文，無**標記
+                ],
+                'breadth_comment': [
+                    r'✅ \*\*廣度評論：\*\*\s*\n(.+?)(?=\n\n|✅|$)',
+                    r'✅ 廣度評論：\s*\n(.+?)(?=\n\n|✅|$)',
+                    r'✅ \*\*广度评论：\*\*\s*\n(.+?)(?=\n\n|✅|$)',
+                    r'✅ 广度评论：\s*\n(.+?)(?=\n\n|✅|$)'
+                ],
+                'depth_comment': [
+                    r'✅ \*\*深度評論：\*\*\s*\n(.+?)(?=\n\n|✅|$)',
+                    r'✅ 深度評論：\s*\n(.+?)(?=\n\n|✅|$)',
+                    r'✅ \*\*深度评论：\*\*\s*\n(.+?)(?=\n\n|✅|$)',
+                    r'✅ 深度评论：\s*\n(.+?)(?=\n\n|✅|$)'
+                ],
+                'overall_comment': [
+                    r'✅ \*\*總體評價：\*\*\s*\n(.+?)(?=\n\n|✅|$)',
+                    r'✅ 總體評價：\s*\n(.+?)(?=\n\n|✅|$)',
+                    r'✅ \*\*总体评价：\*\*\s*\n(.+?)(?=\n\n|✅|$)',
+                    r'✅ 总体评价：\s*\n(.+?)(?=\n\n|✅|$)'
+                ],
+                'question_summary': [
+                    r'✅ \*\*問題摘要：\*\*\s*\n(.+?)(?=\n\n|✅|$)',
+                    r'✅ 問題摘要：\s*\n(.+?)(?=\n\n|✅|$)',
+                    r'✅ \*\*问题摘要：\*\*\s*\n(.+?)(?=\n\n|✅|$)',
+                    r'✅ 问题摘要：\s*\n(.+?)(?=\n\n|✅|$)'
+                ],
+                'answer_summary': [
+                    r'✅ \*\*回答摘要：\*\*\s*\n(.+?)(?=\n\n|✅|$)',
+                    r'✅ 回答摘要：\s*\n(.+?)(?=\n\n|✅|$)',
+                    r'✅ \*\*回答摘要：\*\*\s*\n(.+?)(?=\n\n|✅|$)',
+                    r'✅ 回答摘要：\s*\n(.+?)(?=\n\n|✅|$)'
+                ]
+            }
+            
+            # 嘗試解析每個字段
+            for field, pattern_list in patterns.items():
+                found_match = False
+                for pattern in pattern_list:
+                    try:
+                        match = re.search(pattern, result_text, re.DOTALL | re.MULTILINE)
+                        if match:
+                            if 'score' in field:
+                                # 分數字段
+                                parsed_result[field] = int(match.group(1))
+                                logger.debug(f"成功解析 {field}: {parsed_result[field]}")
+                            else:
+                                # 評論和摘要字段
+                                parsed_result[field] = match.group(1).strip()
+                                logger.debug(f"成功解析 {field}: {parsed_result[field][:50]}...")
+                            found_match = True
+                            break # 找到匹配後立即退出內層循環
+                    except Exception as e:
+                        logger.warning(f"嘗試模式 '{pattern}' 解析 {field} 失敗: {e}")
+                        continue
+                
+                if not found_match:
+                    logger.warning(f"未找到 {field} 的匹配")
+                    # 嘗試更寬鬆的匹配
+                    if 'score' in field:
+                        # 嘗試其他可能的格式
+                        alt_patterns = [
+                            rf'{field.replace("_", "")}.*?(\d+)',
+                            rf'{field.replace("_", "")}.*?(\d+)',
+                            rf'(\d+).*?{field.replace("_", "")}'
+                        ]
+                        for alt_pattern in alt_patterns:
+                            alt_match = re.search(alt_pattern, result_text, re.IGNORECASE)
+                            if alt_match:
+                                parsed_result[field] = int(alt_match.group(1))
+                                logger.info(f"使用備用模式成功解析 {field}: {parsed_result[field]}")
+                                break
+                    else:
+                        # 嘗試更寬鬆的文本匹配
+                        alt_patterns = [
+                            rf'{field.replace("_", "")}.*?([^\n]+)',
+                            rf'([^\n]+).*?{field.replace("_", "")}'
+                        ]
+                        for alt_pattern in alt_patterns:
+                            alt_match = re.search(alt_pattern, result_text, re.IGNORECASE)
+                            if alt_match:
+                                parsed_result[field] = alt_match.group(1).strip()
+                                logger.info(f"使用備用模式成功解析 {field}: {parsed_result[field][:50]}...")
+                                break
+            
+            # 檢查解析結果
+            success_count = sum(1 for v in parsed_result.values() if v != '解析失敗')
+            total_count = len(parsed_result)
+            logger.info(f"解析完成: {success_count}/{total_count} 個字段成功")
+            
+            if success_count == 0:
+                logger.error("所有字段解析失敗，請檢查LLM輸出格式")
+                logger.error(f"完整結果文本: {result_text}")
+            
+            return parsed_result
+            
         except Exception as e:
-            logger.error(f"解析質量評估結果失敗: {e}")
+            logger.error(f"解析評分結果失敗: {e}")
             return {
-                'breadth_score': '解析錯誤',
-                'depth_score': '解析錯誤',
-                'overall_score': '解析錯誤',
-                'breadth_comment': f'解析失敗: {str(e)}',
-                'depth_comment': f'解析失敗: {str(e)}',
-                'overall_comment': f'解析失敗: {str(e)}',
-                'question_summary': f'解析失敗: {str(e)}',
-                'answer_summary': f'解析失敗: {str(e)}'
+                'breadth_score': '解析失敗',
+                'depth_score': '解析失敗',
+                'overall_score': '解析失敗', 
+                'breadth_comment': '解析失敗',
+                'depth_comment': '解析失敗',
+                'overall_comment': '解析失敗',
+                'question_summary': '解析失敗',
+                'answer_summary': '解析失敗'
             }
 
     def load_existing_results(self, results_file: str) -> Dict:
@@ -453,6 +562,294 @@ class BuddhistQACurator:
         except Exception as e:
             logger.error(f"保存結果失敗: {e}")
 
+    def _get_filter_conditions(self) -> Dict:
+        """獲取過濾條件"""
+        try:
+            conditions = {}
+            
+            # 檢查是否有特定的過濾條件
+            if self.config.has_section('filter'):
+                # 列值過濾條件（基於Excel列F、G、H的值）
+                if self.config.has_option('filter', 'column_f_value'):
+                    column_f_value = self.config.get('filter', 'column_f_value')
+                    if column_f_value:
+                        conditions['column_f_value'] = column_f_value.strip()
+                
+                if self.config.has_option('filter', 'column_g_value'):
+                    column_g_value = self.config.get('filter', 'column_g_value')
+                    if column_g_value:
+                        conditions['column_g_value'] = column_g_value.strip()
+                
+                if self.config.has_option('filter', 'column_h_value'):
+                    column_h_value = self.config.get('filter', 'column_h_value')
+                    if column_h_value:
+                        conditions['column_h_value'] = column_h_value.strip()
+                
+                # 檢查是否至少設置了一個列值過濾條件
+                if not any(key in conditions for key in ['column_f_value', 'column_g_value', 'column_h_value']):
+                    logger.warning("過濾模式下未設置任何列值過濾條件，建議設置至少一個列值")
+            
+            return conditions
+            
+        except Exception as e:
+            logger.error(f"獲取過濾條件失敗: {e}")
+            return {}
+
+    def get_filtered_rows(self, worksheet) -> List[int]:
+        """獲取過濾後的行號列表"""
+        try:
+            # 檢查是否啟用過濾模式
+            use_filter_mode = self.config.getboolean('processing', 'use_filter_mode', fallback=False)
+            if not use_filter_mode:
+                return []
+            
+            logger.info("開始執行過濾模式...")
+            
+            # 獲取過濾條件
+            filter_conditions = self._get_filter_conditions()
+            logger.info(f"過濾條件: {filter_conditions}")
+            
+            # 檢查是否有列值過濾條件
+            has_column_filters = any(key in filter_conditions for key in ['column_f_value', 'column_g_value', 'column_h_value'])
+            
+            if has_column_filters:
+                # 使用快速過濾模式
+                logger.info("使用快速列值過濾模式...")
+                filtered_rows = self._fast_column_filter(worksheet, filter_conditions)
+            else:
+                # 使用傳統掃描模式
+                logger.info("使用傳統掃描模式...")
+                filtered_rows = self._traditional_scan_filter(worksheet)
+            
+            logger.info(f"過濾完成，共找到 {len(filtered_rows)} 行")
+            
+            # 記錄過濾結果的詳細信息
+            if filtered_rows:
+                logger.info(f"過濾結果行號: {filtered_rows[:10]}{'...' if len(filtered_rows) > 10 else ''}")
+            
+            return filtered_rows
+            
+        except Exception as e:
+            logger.error(f"獲取過濾行失敗: {e}")
+            return []
+
+    def _fast_column_filter(self, worksheet, conditions: Dict) -> List[int]:
+        """快速列值過濾模式 - 從Column H開始判斷以提高效率"""
+        try:
+            logger.info("開始快速列值過濾（從Column H開始）...")
+            
+            # 記錄使用的過濾條件
+            used_conditions = []
+            if 'column_f_value' in conditions:
+                used_conditions.append(f"F列={conditions['column_f_value']}")
+            if 'column_g_value' in conditions:
+                used_conditions.append(f"G列={conditions['column_g_value']}")
+            if 'column_h_value' in conditions:
+                used_conditions.append(f"H列={conditions['column_h_value']}")
+            
+            logger.info(f"使用的列值過濾條件: {', '.join(used_conditions)}")
+            
+            # 獲取評分範圍設定
+            start_index = self.config.getint('filter', 'start_index', fallback=0)
+            end_index = self.config.getint('filter', 'end_index', fallback=0)
+            score_all_filtered = self.config.getboolean('filter', 'score_all_filtered', fallback=False)
+            
+            # 計算需要的過濾條目數量
+            if score_all_filtered:
+                # 全部評分模式
+                required_count = float('inf')  # 無限大，表示需要所有結果
+                logger.info(f"評分設定: 全部評分模式，將評分所有過濾結果")
+            elif end_index == 0:
+                # 只評分第一條
+                required_count = 1
+                logger.info(f"評分設定: 只評分第一條過濾結果")
+            else:
+                # 評分指定範圍
+                required_count = end_index - start_index + 1
+                logger.info(f"評分設定: 評分第{start_index}到第{end_index}條過濾結果，共需{required_count}條")
+            
+            # 直接讀取列F、G、H的值進行過濾
+            max_row = worksheet.max_row
+            logger.info(f"Excel總行數: {max_row}")
+            
+            # 從第7行開始掃描（跳過標題行和說明行）
+            scan_start = 7
+            scan_end = min(max_row, 1000)  # 限制掃描範圍
+            
+            logger.info(f"掃描範圍: 第{scan_start}行到第{scan_end}行")
+            logger.info(f"預計掃描行數: {scan_end - scan_start + 1}")
+            
+            # 計算預期的進度更新點
+            expected_progress_points = []
+            for i in range(50, scan_end + 1, 50):
+                if i >= scan_start:
+                    expected_progress_points.append(i)
+            
+            logger.info(f"預期進度更新點: {expected_progress_points[:10]}{'...' if len(expected_progress_points) > 10 else ''}")
+            
+            # 記錄開始時間
+            import time
+            start_time = time.time()
+            last_progress_time = start_time
+            
+            filtered_rows = []
+            
+            for row in range(scan_start, scan_end + 1):
+                try:
+                    # 優化策略：從Column H開始判斷，因為H是最細分的第三級目錄
+                    # 如果H不匹配，很可能F和G也不匹配，可以跳過後續檢查
+                    matches = True
+                    
+                    # 1. 首先檢查第H列（第8列）- 第三級目錄
+                    if 'column_h_value' in conditions:
+                        cell_value = worksheet.cell(row=row, column=8).value
+                        if cell_value is None:
+                            cell_value = ""
+                        if str(cell_value).strip() != conditions['column_h_value']:
+                            matches = False
+                            # H列不匹配，跳過後續檢查
+                            continue
+                        else:
+                            logger.debug(f"第{row}行H列匹配: {cell_value}")
+                    
+                    # 2. 如果H列匹配，檢查第G列（第7列）- 第二級目錄
+                    if matches and 'column_g_value' in conditions:
+                        cell_value = worksheet.cell(row=row, column=7).value
+                        if cell_value is None:
+                            cell_value = ""
+                        if str(cell_value).strip() != conditions['column_g_value']:
+                            matches = False
+                            # G列不匹配，跳過F列檢查
+                            continue
+                        else:
+                            logger.debug(f"第{row}行G列匹配: {cell_value}")
+                    
+                    # 3. 如果G列也匹配，檢查第F列（第6列）- 第一級目錄
+                    if matches and 'column_f_value' in conditions:
+                        cell_value = worksheet.cell(row=row, column=6).value
+                        if cell_value is None:
+                            cell_value = ""
+                        if str(cell_value).strip() != conditions['column_f_value']:
+                            matches = False
+                            # F列不匹配，該行不符合條件
+                            continue
+                        else:
+                            logger.debug(f"第{row}行F列匹配: {cell_value}")
+                    
+                    # 所有設置的列值條件都匹配
+                    if matches:
+                        filtered_rows.append(row)
+                        logger.debug(f"第{row}行通過所有列值過濾")
+                        
+                        # 檢查是否已達到目標數量
+                        if len(filtered_rows) >= required_count:
+                            logger.info(f"已找到足夠的過濾結果: {len(filtered_rows)}條，目標: {required_count}條，提前停止掃描")
+                            break
+                    
+                    # 進度更新：每50行更新一次，確保進度可見性
+                    if row % 50 == 0:
+                        current_time = time.time()
+                        elapsed_time = current_time - start_time
+                        rows_per_second = row / elapsed_time if elapsed_time > 0 else 0
+                        target_info = "全部" if required_count == float('inf') else f"目標 {required_count} 行"
+                        logger.info(f"快速過濾進度: 已掃描到第 {row} 行，當前找到 {len(filtered_rows)} 行匹配，{target_info}，耗時 {elapsed_time:.1f}秒，速度 {rows_per_second:.1f}行/秒")
+                        last_progress_time = current_time
+                    
+                    # 每100行也更新一次（作為主要進度點）
+                    if row % 100 == 0:
+                        current_time = time.time()
+                        elapsed_time = current_time - start_time
+                        rows_per_second = row / elapsed_time if elapsed_time > 0 else 0
+                        target_info = "全部" if required_count == float('inf') else f"目標 {required_count} 行"
+                        logger.info(f"快速過濾主要進度: 已掃描到第 {row} 行，當前找到 {len(filtered_rows)} 行匹配，{target_info}，耗時 {elapsed_time:.1f}秒，速度 {rows_per_second:.1f}行/秒")
+                    
+                    # 每200行更新一次（作為大進度點）
+                    if row % 200 == 0:
+                        current_time = time.time()
+                        elapsed_time = current_time - start_time
+                        rows_per_second = row / elapsed_time if elapsed_time > 0 else 0
+                        target_info = "全部" if required_count == float('inf') else f"目標 {required_count} 行"
+                        logger.info(f"快速過濾大進度: 已掃描到第 {row} 行，當前找到 {len(filtered_rows)} 行匹配，{target_info}，耗時 {elapsed_time:.1f}秒，速度 {rows_per_second:.1f}行/秒")
+                    
+                    # 如果超過5秒沒有進度更新，強制輸出一次
+                    current_time = time.time()
+                    if current_time - last_progress_time > 5:
+                        target_info = "全部" if required_count == float('inf') else f"目標 {required_count} 行"
+                        logger.info(f"強制進度更新: 已掃描到第 {row} 行，當前找到 {len(filtered_rows)} 行匹配，{target_info}，耗時 {current_time - start_time:.1f}秒")
+                        last_progress_time = current_time
+                
+                except Exception as e:
+                    logger.warning(f"快速過濾第 {row} 行時出錯: {e}")
+                    continue
+            
+            # 掃描完成後的總結日誌
+            total_scanned = row - scan_start + 1 if 'row' in locals() else 0
+            if score_all_filtered:
+                logger.info(f"快速列值過濾完成，全部評分模式，找到 {len(filtered_rows)} 行匹配")
+                logger.info(f"掃描統計: 從第{scan_start}行到第{scan_end}行，共掃描{scan_end - scan_start + 1}行")
+            elif len(filtered_rows) >= required_count:
+                logger.info(f"快速列值過濾完成，已找到足夠的結果: {len(filtered_rows)}條，目標: {required_count}條")
+                logger.info(f"掃描統計: 從第{scan_start}行到第{row}行，共掃描{total_scanned}行，提前停止")
+            else:
+                logger.info(f"快速列值過濾完成，找到 {len(filtered_rows)} 行匹配，目標: {required_count}行")
+                logger.info(f"掃描統計: 從第{scan_start}行到第{scan_end}行，共掃描{scan_end - scan_start + 1}行")
+            
+            # 記錄過濾效率統計
+            if score_all_filtered:
+                # 全部評分模式，使用完整掃描範圍
+                total_scanned = scan_end - scan_start + 1
+            efficiency = (len(filtered_rows) / total_scanned) * 100 if total_scanned > 0 else 0
+            logger.info(f"過濾效率: {efficiency:.2f}% ({len(filtered_rows)}/{total_scanned})")
+            
+            return filtered_rows
+            
+        except Exception as e:
+            logger.error(f"快速列值過濾失敗: {e}")
+            return []
+
+    def _traditional_scan_filter(self, worksheet) -> List[int]:
+        """傳統掃描過濾模式"""
+        try:
+            logger.info("開始傳統掃描過濾...")
+            
+            # 獲取所有行
+            logger.info("開始掃描Excel行...")
+            all_rows = []
+            
+            # 優化：只掃描有數據的行，跳過空行
+            max_row = worksheet.max_row
+            logger.info(f"Excel總行數: {max_row}")
+            
+            # 從第7行開始掃描（跳過標題行和說明行）
+            scan_start = 7
+            scan_end = min(max_row, 1000)  # 限制掃描範圍，避免過度掃描
+            
+            logger.info(f"掃描範圍: 第{scan_start}行到第{scan_end}行")
+            
+            for row in range(scan_start, scan_end + 1):
+                try:
+                    # 快速檢查是否有內容（只檢查問題列）
+                    question_col = self.config.getint('excel', 'question_column')
+                    cell_value = worksheet.cell(row=row, column=question_col).value
+                    
+                    if cell_value and str(cell_value).strip():
+                        all_rows.append(row)
+                        
+                        # 每100行記錄一次進度
+                        if len(all_rows) % 100 == 0:
+                            logger.info(f"已找到 {len(all_rows)} 行有內容的數據，當前掃描到第 {row} 行")
+                    
+                except Exception as e:
+                    logger.warning(f"掃描第 {row} 行時出錯: {e}")
+                    continue
+            
+            logger.info(f"掃描完成，找到 {len(all_rows)} 行有內容的數據")
+            return all_rows
+            
+        except Exception as e:
+            logger.error(f"傳統掃描過濾失敗: {e}")
+            return []
+
     def process_batch(self, start_row: int = None, end_row: int = None, results_file: str = None):
         """批量處理問答精選評分，輸出到JSON文件"""
         # 載入配置
@@ -472,18 +869,51 @@ class BuddhistQACurator:
         # 載入Excel
         workbook, worksheet = self.load_excel_data()
         
-        # 確定處理範圍
-        max_row = worksheet.max_row
-        if end_row is None or end_row > max_row:
-            end_row = max_row
+        # 檢查處理模式
+        use_filter_mode = self.config.getboolean('processing', 'use_filter_mode', fallback=False)
         
-        logger.info(f"開始處理第 {start_row} 到 {end_row} 行，共 {end_row - start_row + 1} 條記錄")
+        if use_filter_mode:
+            # 過濾模式
+            self.processing_metadata['processing_mode'] = "filter_mode"
+            rows_to_process = self.get_filtered_rows(worksheet)
+            
+            if not rows_to_process:
+                logger.warning("過濾模式下沒有找到符合條件的行")
+                return results_file
+            
+            # 獲取過濾結果的評分範圍
+            filter_start_index = self.config.getint('filter', 'start_index', fallback=0)
+            filter_end_index = self.config.getint('filter', 'end_index', fallback=0)
+            
+            if filter_end_index > 0:
+                # 指定範圍
+                start_idx = max(0, filter_start_index)
+                end_idx = min(len(rows_to_process), filter_end_index + 1)
+                rows_to_process = rows_to_process[start_idx:end_idx]
+                logger.info(f"過濾模式：處理第 {start_idx+1} 到第 {end_idx} 條過濾結果")
+            else:
+                # 只處理第一條
+                rows_to_process = rows_to_process[:1]
+                logger.info("過濾模式：只處理第一條過濾結果")
+            
+        else:
+            # 傳統模式（指定行號）
+            self.processing_metadata['processing_mode'] = "row_mode"
+            
+            # 確定處理範圍
+            max_row = worksheet.max_row
+            if end_row is None or end_row > max_row:
+                end_row = max_row
+            
+            rows_to_process = list(range(start_row, end_row + 1))
+            logger.info(f"傳統模式：處理第 {start_row} 到 {end_row} 行，共 {len(rows_to_process)} 條記錄")
+        
         logger.info(f"結果將保存到: {results_file}")
         
         processed_count = 0
         success_count = 0
         
-        for row in range(start_row, end_row + 1):
+        for row in rows_to_process:
             try:
                 # 檢查是否已處理
                 row_key = str(row)
@@ -547,22 +977,22 @@ class BuddhistQACurator:
 def main():
     """主函數"""
     parser = argparse.ArgumentParser(
-        description="佛學問答精選自動化系統 v2.0",
+        description="佛學問答精選自動化系統",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 使用示例:
   # 使用OpenAI API（推薦）
-  python3 qa_curator_v2.py --api-key YOUR_API_KEY --api-type openai
+  python3 qa_curator.py --api-key YOUR_API_KEY --api-type openai
   
   # 使用ChatMock
-  python3 qa_curator_v2.py --api-type chatmock
+  python3 qa_curator.py --api-type chatmock
   
   # 使用環境變量
   export OPENAI_API_KEY=YOUR_API_KEY
-  python3 qa_curator_v2.py --api-type openai
+  python3 qa_curator.py --api-type openai
   
   # 使用配置文件（不推薦，會產生commit警告）
-  python3 qa_curator_v2.py
+  python3 qa_curator.py
         """
     )
     
@@ -594,7 +1024,7 @@ def main():
     
     args = parser.parse_args()
     
-    print("佛學問答精選自動化系統 v2.0")
+    print("佛學問答精選自動化系統")
     print("=" * 50)
     
     try:
