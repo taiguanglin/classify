@@ -140,19 +140,25 @@ class BuddhistQACurator:
             
             model = self.config.get('chatmock', 'model', fallback='gpt-5')
             
-            # 創建OpenAI客戶端實例，指向ChatMock服務器
-            self.client = OpenAI(
-                base_url=base_url,
-                api_key="chatmock"  # ChatMock忽略此值
-            )
             self.model = model
             
-            # ChatMock使用GPT-5參數
-            self.temperature, self.max_tokens = self._get_model_specific_params()
+            # ChatMock使用GPT-5參數，獲取timeout配置
+            self.temperature, self.max_tokens, chatmock_timeout = self._get_model_specific_params()
+            
+            # 優先使用ChatMock專用的timeout配置
+            timeout = self.config.getint('chatmock', 'timeout', fallback=chatmock_timeout)
+            self.timeout = timeout
+            
+            # 創建OpenAI客戶端實例，指向ChatMock服務器，設置timeout
+            self.client = OpenAI(
+                base_url=base_url,
+                api_key="chatmock",  # ChatMock忽略此值
+                timeout=float(timeout)
+            )
             
             logger.info(f"ChatMock設置完成 - 服務器: {base_url}")
             logger.info(f"使用模型: {self.model}")
-            logger.info(f"使用參數 - 溫度: {self.temperature}, 最大Token: {self.max_tokens}")
+            logger.info(f"使用參數 - 溫度: {self.temperature}, 最大Token: {self.max_tokens}, 超時: {self.timeout}秒")
             
         except Exception as e:
             logger.error(f"ChatMock設置失敗: {e}")
@@ -178,15 +184,16 @@ class BuddhistQACurator:
                 "3. 配置文件: 在config.ini中設置api_key（不推薦）"
             )
         
-        # 創建OpenAI客戶端實例
-        self.client = OpenAI(api_key=api_key)
         self.model = self.config.get('openai', 'model', fallback='gpt-4')
         
         # 根據模型類型自動選擇參數配置
-        self.temperature, self.max_tokens = self._get_model_specific_params()
+        self.temperature, self.max_tokens, self.timeout = self._get_model_specific_params()
+        
+        # 創建OpenAI客戶端實例，使用配置的timeout
+        self.client = OpenAI(api_key=api_key, timeout=float(self.timeout))
         
         logger.info(f"OpenAI設置完成 - 模型: {self.model}")
-        logger.info(f"使用參數 - 溫度: {self.temperature}, 最大Token: {self.max_tokens}")
+        logger.info(f"使用參數 - 溫度: {self.temperature}, 最大Token: {self.max_tokens}, 超時: {self.timeout}秒")
     
     def _get_model_specific_params(self) -> tuple:
         """根據模型類型獲取對應的參數配置"""
@@ -205,6 +212,9 @@ class BuddhistQACurator:
                 except:
                     max_tokens = None
                 
+                # 獲取timeout配置
+                timeout = self.config.getint('gpt5_models', 'timeout', fallback=120)
+                
                 logger.info(f"使用GPT-5專用參數配置")
                 
             else:
@@ -213,13 +223,14 @@ class BuddhistQACurator:
                 
                 temperature = self.config.getfloat('gpt4_models', 'temperature', fallback=0.3)
                 max_tokens = self.config.getint('gpt4_models', 'max_tokens', fallback=1000)
+                timeout = self.config.getint('gpt4_models', 'timeout', fallback=120)
             
-            return temperature, max_tokens
+            return temperature, max_tokens, timeout
             
         except Exception as e:
             logger.error(f"獲取模型特定參數失敗: {e}")
             logger.warning("使用默認參數配置")
-            return 0.3, 1000
+            return 0.3, 1000, 120
     
     def _get_llm_model_display_name(self) -> str:
         """獲取LLM模型的顯示名稱，根據API類型動態設置"""
@@ -309,7 +320,7 @@ class BuddhistQACurator:
             return "", ""
 
     def evaluate_qa_quality(self, question: str, answer: str) -> Dict[str, Any]:
-        """評估問答質量"""
+        """評估問答質量，支持timeout和重試機制"""
         try:
             # 記錄開始時間
             start_time = time.time()
@@ -325,14 +336,13 @@ class BuddhistQACurator:
             api_params = {
                 'model': self.model,
                 'messages': [{'role': 'user', 'content': formatted_prompt}],
-                'temperature': self.temperature,
-                'max_tokens': self.max_tokens
+                'temperature': self.temperature
             }
             
             if self.max_tokens:
                 api_params['max_tokens'] = self.max_tokens
             
-            logger.info(f"🔧 API參數準備完成: 模型={self.model}, 溫度={self.temperature}")
+            logger.info(f"🔧 API參數準備完成: 模型={self.model}, 溫度={self.temperature}, 超時={self.timeout}秒")
             
             # 執行API調用
             logger.info(f"🌐 開始API調用...")
@@ -342,6 +352,7 @@ class BuddhistQACurator:
             max_retries = 3
             retry_count = 0
             last_error = None
+            timeout_count = 0
             
             while retry_count < max_retries:
                 try:
@@ -382,27 +393,43 @@ class BuddhistQACurator:
                     retry_count += 1
                     api_time = time.time() - api_start
                     
-                    if retry_count < max_retries:
-                        logger.warning(f"⚠️ API調用失敗 (第{retry_count}次): {e}")
-                        logger.warning(f"⏱️ 已耗時: {api_time:.2f}秒，準備重試...")
+                    # 檢查是否為timeout錯誤
+                    error_str = str(e).lower()
+                    is_timeout = any(keyword in error_str for keyword in ['timeout', 'timed out', 'time out'])
+                    
+                    if is_timeout:
+                        timeout_count += 1
+                        logger.warning(f"⏰ API調用超時 (第{retry_count}次，累計超時{timeout_count}次): {e}")
+                        logger.warning(f"⏱️ 已耗時: {api_time:.2f}秒，超時閾值: {self.timeout}秒")
                     else:
-                        logger.error(f"❌ API調用最終失敗，已重試{max_retries}次: {e}")
+                        logger.warning(f"⚠️ API調用失敗 (第{retry_count}次): {e}")
+                        logger.warning(f"⏱️ 已耗時: {api_time:.2f}秒")
+                    
+                    if retry_count < max_retries:
+                        logger.info(f"🔄 準備重試，等待 {2 ** retry_count} 秒...")
+                    else:
+                        if is_timeout:
+                            logger.error(f"❌ API調用最終超時失敗，已重試{max_retries}次，累計超時{timeout_count}次")
+                        else:
+                            logger.error(f"❌ API調用最終失敗，已重試{max_retries}次: {e}")
                         logger.error(f"⏱️ 總耗時: {api_time:.2f}秒")
                         break
             
             # 所有重試都失敗了
-            logger.error(f"💥 AI評分完全失敗，返回錯誤結果")
+            error_type = "超時" if timeout_count > 0 else "調用失敗"
+            logger.error(f"💥 AI評分完全失敗 ({error_type})，返回錯誤結果")
+            
             return {
-                'breadth_score': 'API調用失敗',
-                'depth_score': 'API調用失敗',
-                'uniqueness_score': 'API調用失敗',
-                'overall_score': 'API調用失敗',
-                'breadth_comment': f'API調用失敗: {str(last_error)}',
-                'depth_comment': f'API調用失敗: {str(last_error)}',
-                'uniqueness_comment': f'API調用失敗: {str(last_error)}',
-                'overall_comment': f'API調用失敗: {str(last_error)}',
-                'question_summary': 'API調用失敗',
-                'answer_summary': 'API調用失敗',
+                'breadth_score': f'API{error_type}',
+                'depth_score': f'API{error_type}',
+                'uniqueness_score': f'API{error_type}',
+                'overall_score': f'API{error_type}',
+                'breadth_comment': f'API{error_type}: {str(last_error)}',
+                'depth_comment': f'API{error_type}: {str(last_error)}',
+                'uniqueness_comment': f'API{error_type}: {str(last_error)}',
+                'overall_comment': f'API{error_type}: {str(last_error)}',
+                'question_summary': f'API{error_type}',
+                'answer_summary': f'API{error_type}',
                 'status': 'error'
             }
             
@@ -1060,12 +1087,12 @@ class BuddhistQACurator:
             # 傳統模式（指定行號）
             logger.info("📝 使用行號模式...")
             self.processing_metadata['processing_mode'] = "row_mode"
-            
-            # 確定處理範圍
-            max_row = worksheet.max_row
-            if end_row is None or end_row > max_row:
-                end_row = max_row
-            
+        
+        # 確定處理範圍
+        max_row = worksheet.max_row
+        if end_row is None or end_row > max_row:
+            end_row = max_row
+        
             rows_to_process = list(range(start_row, end_row + 1))
             logger.info(f"🎯 行號模式：處理第 {start_row} 到 {end_row} 行，共 {len(rows_to_process)} 條記錄")
         
@@ -1080,6 +1107,7 @@ class BuddhistQACurator:
         success_count = 0
         failed_count = 0
         skipped_count = 0
+        timeout_count = 0  # 新增timeout統計
         
         # 記錄處理開始時間
         processing_start_time = time.time()
@@ -1158,6 +1186,11 @@ class BuddhistQACurator:
                 processed_count += 1
                 if result.get('status') == 'success':
                     success_count += 1
+                elif 'API超時' in str(result.get('breadth_score', '')):
+                    timeout_count += 1
+                    failed_count += 1
+                else:
+                    failed_count += 1
                 
                 # 計算總耗時
                 total_item_time = extract_time + scoring_time + save_time
@@ -1175,7 +1208,7 @@ class BuddhistQACurator:
                 # API調用間隔
                 if i < total_count - 1:  # 不是最後一條
                     logger.info(f"⏸️ 等待1秒後處理下一條...")
-                    time.sleep(1)
+                time.sleep(1)
                 
             except Exception as e:
                 logger.error(f"❌ 處理第 {row} 行時發生錯誤: {e}")
@@ -1199,6 +1232,8 @@ class BuddhistQACurator:
         logger.info(f"   - 成功: {success_count} 條")
         logger.info(f"   - 失敗: {failed_count} 條")
         logger.info(f"   - 跳過: {skipped_count} 條")
+        if timeout_count > 0:
+            logger.info(f"   - 超時: {timeout_count} 條 ({timeout_count/processed_count*100:.1f}%)")
         logger.info(f"⏱️ 時間統計:")
         logger.info(f"   - 總耗時: {total_time:.2f}秒 ({total_time/60:.1f}分鐘)")
         logger.info(f"   - 處理耗時: {processing_time:.2f}秒 ({processing_time/60:.1f}分鐘)")
@@ -1207,6 +1242,9 @@ class BuddhistQACurator:
             logger.info(f"🚀 性能統計:")
             logger.info(f"   - 平均速度: {processed_count/processing_time:.2f} 條/秒")
             logger.info(f"   - 平均每條耗時: {processing_time/processed_count:.2f} 秒")
+            if timeout_count > 0:
+                logger.info(f"   - 超時率: {timeout_count/processed_count*100:.1f}%")
+                logger.info(f"   - 建議調整timeout設置: 當前{self.timeout}秒")
         
         return results_file
 

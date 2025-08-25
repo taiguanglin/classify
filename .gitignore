@@ -8,3 +8,6 @@ __pycache__
 
 .demo_cache
 .test_cache
+test_combined_comments.py
+test_timeout_mechanism.py
+verify_combined_comments.py

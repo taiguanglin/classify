@@ -188,9 +188,7 @@ class CurationResultsWriter:
             depth_score_col = self.config.getint('output', 'depth_score_column')
             uniqueness_score_col = self.config.getint('output', 'uniqueness_score_column')
             overall_score_col = self.config.getint('output', 'overall_score_column')
-            breadth_comment_col = self.config.getint('output', 'breadth_comment_column')
-            depth_comment_col = self.config.getint('output', 'depth_comment_column')
-            uniqueness_comment_col = self.config.getint('output', 'uniqueness_comment_column')
+            combined_comment_col = self.config.getint('output', 'combined_comment_column')
             overall_comment_col = self.config.getint('output', 'overall_comment_column')
             
             # 添加標題行
@@ -198,9 +196,7 @@ class CurationResultsWriter:
             worksheet.cell(row=1, column=depth_score_col, value="深度評分")
             worksheet.cell(row=1, column=uniqueness_score_col, value="獨特性評分")
             worksheet.cell(row=1, column=overall_score_col, value="綜合評分")
-            worksheet.cell(row=1, column=breadth_comment_col, value="廣度評論")
-            worksheet.cell(row=1, column=depth_comment_col, value="深度評論")
-            worksheet.cell(row=1, column=uniqueness_comment_col, value="獨特性評論")
+            worksheet.cell(row=1, column=combined_comment_col, value="綜合評論")
             worksheet.cell(row=1, column=overall_comment_col, value="總體評價")
             
             logger.info("列標題添加完成")
@@ -216,9 +212,7 @@ class CurationResultsWriter:
             depth_score_col = self.config.getint('output', 'depth_score_column')
             uniqueness_score_col = self.config.getint('output', 'uniqueness_score_column')
             overall_score_col = self.config.getint('output', 'overall_score_column')
-            breadth_comment_col = self.config.getint('output', 'breadth_comment_column')
-            depth_comment_col = self.config.getint('output', 'depth_comment_column')
-            uniqueness_comment_col = self.config.getint('output', 'uniqueness_comment_column')
+            combined_comment_col = self.config.getint('output', 'combined_comment_column')
             overall_comment_col = self.config.getint('output', 'overall_comment_column')
             
             # 寫入評分結果
@@ -234,16 +228,12 @@ class CurationResultsWriter:
             if result.get('overall_score') != '解析失敗':
                 worksheet.cell(row=row, column=overall_score_col, value=result['overall_score'])
             
-            # 寫入評論結果
-            if result.get('breadth_comment') != '解析失敗':
-                worksheet.cell(row=row, column=breadth_comment_col, value=result['breadth_comment'])
+            # 合併三個評論到一個欄位
+            combined_comment = self._combine_comments(result)
+            if combined_comment:
+                self._write_cell_with_format(worksheet, row, combined_comment_col, combined_comment)
             
-            if result.get('depth_comment') != '解析失敗':
-                worksheet.cell(row=row, column=depth_comment_col, value=result['depth_comment'])
-            
-            if result.get('uniqueness_comment') != '解析失敗':
-                worksheet.cell(row=row, column=uniqueness_comment_col, value=result['uniqueness_comment'])
-            
+            # 寫入總體評價
             if result.get('overall_comment') != '解析失敗':
                 worksheet.cell(row=row, column=overall_comment_col, value=result['overall_comment'])
             
@@ -261,6 +251,28 @@ class CurationResultsWriter:
             
         except Exception as e:
             logger.error(f"寫入第{row}行精選評分結果失敗: {e}")
+    
+    def _combine_comments(self, result: Dict[str, Any]) -> str:
+        """合併廣度、深度、獨特性評論到一個欄位"""
+        comments = []
+        
+        # 添加廣度評論
+        breadth_comment = result.get('breadth_comment')
+        if breadth_comment and breadth_comment != '解析失敗':
+            comments.append(f"【廣度評論】\n{breadth_comment}")
+        
+        # 添加深度評論
+        depth_comment = result.get('depth_comment')
+        if depth_comment and depth_comment != '解析失敗':
+            comments.append(f"【深度評論】\n{depth_comment}")
+        
+        # 添加獨特性評論
+        uniqueness_comment = result.get('uniqueness_comment')
+        if uniqueness_comment and uniqueness_comment != '解析失敗':
+            comments.append(f"【獨特性評論】\n{uniqueness_comment}")
+        
+        # 用雙換行分隔不同類型的評論
+        return '\n\n'.join(comments) if comments else None
     
     def _write_cell_with_format(self, worksheet, row: int, col: int, value: str):
         """寫入單元格並設置自動換行格式"""
@@ -470,9 +482,7 @@ class CurationResultsWriter:
             depth_score_col = self.config.getint('output', 'depth_score_column')
             uniqueness_score_col = self.config.getint('output', 'uniqueness_score_column')
             overall_score_col = self.config.getint('output', 'overall_score_column')
-            breadth_comment_col = self.config.getint('output', 'breadth_comment_column')
-            depth_comment_col = self.config.getint('output', 'depth_comment_column')
-            uniqueness_comment_col = self.config.getint('output', 'uniqueness_comment_column')
+            combined_comment_col = self.config.getint('output', 'combined_comment_column')
             overall_comment_col = self.config.getint('output', 'overall_comment_column')
             
             # 調整評分列寬度（數字列，固定寬度）
@@ -480,8 +490,15 @@ class CurationResultsWriter:
                 worksheet.column_dimensions[openpyxl.utils.get_column_letter(col)].width = 15
             
             # 調整評論列寬度（文本列，適中寬度，支持自動換行）
-            for col in [breadth_comment_col, depth_comment_col, uniqueness_comment_col, overall_comment_col]:
-                worksheet.column_dimensions[openpyxl.utils.get_column_letter(col)].width = 40
+            # 合併評論欄位需要更寬的寬度，因為包含三種評論
+            for col in [combined_comment_col, overall_comment_col]:
+                if col == combined_comment_col:
+                    # 合併評論欄位設置更寬的寬度
+                    worksheet.column_dimensions[openpyxl.utils.get_column_letter(col)].width = 60
+                else:
+                    # 總體評價欄位保持原寬度
+                    worksheet.column_dimensions[openpyxl.utils.get_column_letter(col)].width = 40
+                
                 # 設置自動換行
                 for row in range(1, worksheet.max_row + 1):
                     cell = worksheet.cell(row=row, column=col)
@@ -551,9 +568,7 @@ class CurationResultsWriter:
             depth_score_col = self.config.getint('output', 'depth_score_column')
             uniqueness_score_col = self.config.getint('output', 'uniqueness_score_column')
             overall_score_col = self.config.getint('output', 'overall_score_column')
-            breadth_comment_col = self.config.getint('output', 'breadth_comment_column')
-            depth_comment_col = self.config.getint('output', 'depth_comment_column')
-            uniqueness_comment_col = self.config.getint('output', 'uniqueness_comment_column')
+            combined_comment_col = self.config.getint('output', 'combined_comment_column')
             overall_comment_col = self.config.getint('output', 'overall_comment_column')
             
             # 只調整評分相關列
@@ -562,9 +577,7 @@ class CurationResultsWriter:
                 {'col': depth_score_col, 'min_width': 12, 'max_width': 18, 'name': '深度評分'},
                 {'col': uniqueness_score_col, 'min_width': 12, 'max_width': 18, 'name': '獨特性評分'},
                 {'col': overall_score_col, 'min_width': 12, 'max_width': 18, 'name': '綜合評分'},
-                {'col': breadth_comment_col, 'min_width': 30, 'max_width': 40, 'name': '廣度評論'},
-                {'col': depth_comment_col, 'min_width': 30, 'max_width': 40, 'name': '深度評論'},
-                {'col': uniqueness_comment_col, 'min_width': 30, 'max_width': 40, 'name': '獨特性評論'},
+                {'col': combined_comment_col, 'min_width': 50, 'max_width': 80, 'name': '綜合評論'},
                 {'col': overall_comment_col, 'min_width': 30, 'max_width': 40, 'name': '總體評價'},
             ]
             
